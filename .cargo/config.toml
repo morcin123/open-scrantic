@@ -1,0 +1,4 @@
+# Link the C runtime statically: a clean Windows has no VCRUNTIME140.dll (Visual C++ Redistributable),
+# and without it the program does not start at all.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]

@@ -41,6 +41,11 @@ jobs:
       - run: cargo build --release --features screensaver
       - name: Smoke test
         run: |
+          # The runner has the Visual C++ Redistributable, a clean Windows does not: the .scr must not need it.
+          if grep -qai 'vcruntime140' target/release/open-scrantic.exe; then
+            echo "open-scrantic.exe imports VCRUNTIME140.dll: the C runtime is not linked statically" >&2
+            exit 1
+          fi
           # /a (change password) is a switch the screensaver ignores: it must exit at once with status 0.
           target/release/open-scrantic.exe /a
           cp target/release/open-scrantic.exe JohnnyCastaway.scr
