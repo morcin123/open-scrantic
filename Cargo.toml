@@ -43,3 +43,6 @@ all = { level = "deny", priority = -1 }
 
 [target."cfg(windows)".build-dependencies]
 embed-resource = "3.0.12"
+
+[target."cfg(unix)".dependencies]
+signal-hook = "0.4.5"

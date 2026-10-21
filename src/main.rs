@@ -12,6 +12,8 @@ mod saver;
 
 use std::num::NonZeroU32;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use winit::application::ApplicationHandler;
@@ -32,6 +34,23 @@ use open_scrantic::{assets, audio};
 
 /// The title screen stays up while the 1992 machine loaded the first session.
 const INTRO_HOLD: Duration = Duration::from_secs(2);
+
+/// Raised by SIGTERM, SIGINT or SIGHUP (Unix): the run then ends like Esc ends it, saving the story progress, instead
+/// of the process dying with it unsaved. That is how a desktop's idle daemon stops a screensaver.
+fn termination_flag() -> Arc<AtomicBool> {
+    let flag = Arc::new(AtomicBool::new(false));
+    #[cfg(unix)]
+    for signal in [
+        signal_hook::consts::SIGTERM,
+        signal_hook::consts::SIGINT,
+        signal_hook::consts::SIGHUP,
+    ] {
+        if let Err(e) = signal_hook::flag::register(signal, Arc::clone(&flag)) {
+            eprintln!("warning: cannot handle signal {signal}: {e}");
+        }
+    }
+    flag
+}
 
 /// Where the picture is shown.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -68,6 +87,8 @@ struct App {
     screenshot: bool,
     /// The title screen has been requested once; until the first step it needs no further redraws.
     intro_drawn: bool,
+    /// Set when the process was asked to terminate (see [`termination_flag`]).
+    terminate: Arc<AtomicBool>,
 }
 
 impl App {
@@ -257,6 +278,10 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.terminate.load(Ordering::Relaxed) {
+            event_loop.exit();
+            return;
+        }
         if self.window.is_none() {
             return;
         }
@@ -337,6 +362,7 @@ fn main() {
         saved,
         screenshot: false,
         intro_drawn: false,
+        terminate: termination_flag(),
     };
     if let Err(e) = event_loop.run_app(&mut app) {
         eprintln!("error: {e}");
