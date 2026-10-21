@@ -1,0 +1,49 @@
+name: Windows screensaver
+
+# This fork's build of the Windows screensaver (.scr) with the clock and weather overlay: linted, tested and
+# uploaded as an artifact on every push to main.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: screensaver-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  scr:
+    name: Build JohnnyCastaway.scr
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install toolchain (from rust-toolchain.toml)
+        run: |
+          rustup toolchain install
+          rustup component add clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo clippy --all-targets --features screensaver
+      - run: cargo test --features screensaver
+      - run: cargo build --release --features screensaver
+      - name: Smoke test
+        run: |
+          # /a (change password) is a switch the screensaver ignores: it must exit at once with status 0.
+          target/release/open-scrantic.exe /a
+          cp target/release/open-scrantic.exe JohnnyCastaway.scr
+          sha256sum JohnnyCastaway.scr
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: JohnnyCastaway-scr
+          path: JohnnyCastaway.scr
