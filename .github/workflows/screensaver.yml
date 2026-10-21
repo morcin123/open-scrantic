@@ -47,3 +47,39 @@ jobs:
         with:
           name: JohnnyCastaway-scr
           path: JohnnyCastaway.scr
+      - name: Test the installer (Windows PowerShell 5.1, as a double-click runs it)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pkg = Join-Path $env:RUNNER_TEMP 'pakiet'
+          New-Item -ItemType Directory -Force (Join-Path $pkg 'dane') | Out-Null
+          Copy-Item windows-installer\* $pkg
+          Copy-Item JohnnyCastaway.scr $pkg
+          # The original files are never in the repository: the installer only copies them, so placeholders do.
+          foreach ($n in 'SCRANTIC.SCR', 'RESOURCE.MAP', 'RESOURCE.001') { Set-Content (Join-Path $pkg "dane\$n") 'placeholder' }
+          foreach ($s in 'Zainstaluj.ps1', 'Odinstaluj.ps1') {
+            powershell.exe -NoProfile -Command "`$e = `$null; [void][System.Management.Automation.Language.Parser]::ParseFile('$pkg\$s', [ref]`$null, [ref]`$e); if (`$e) { `$e; exit 1 }"
+            if ($LASTEXITCODE -ne 0) { throw "$s does not parse" }
+          }
+
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $pkg 'Zainstaluj.ps1')
+          if ($LASTEXITCODE -ne 0) { throw 'Zainstaluj.ps1 failed' }
+          $scr = "$env:windir\System32\JohnnyCastaway.scr"
+          if ((Get-FileHash $scr).Hash -ne (Get-FileHash JohnnyCastaway.scr).Hash) { throw 'the .scr is not in System32' }
+          $desktop = Get-ItemProperty 'HKCU:\Control Panel\Desktop'
+          if ($desktop.'SCRNSAVE.EXE' -ne $scr -or $desktop.ScreenSaveActive -ne '1') { throw 'not set as the screensaver' }
+          $data = Join-Path $env:APPDATA 'OpenScrantic'
+          foreach ($n in 'SCRANTIC.SCR', 'RESOURCE.MAP', 'RESOURCE.001') { if (-not (Test-Path (Join-Path $data $n))) { throw "$n not copied" } }
+          $ini = [IO.File]::ReadAllBytes((Join-Path $data 'SCRANTIC.INI'))
+          if ($ini[0] -eq 0xEF) { throw 'SCRANTIC.INI has a BOM' }
+          if (-not ([Text.Encoding]::UTF8.GetString($ini) -match 'WeatherLocation=Warszawa')) { throw 'no WeatherLocation in SCRANTIC.INI' }
+          # The installed copy starts: /a (ignored) must exit at once with status 0. Not through `&`: that goes through
+          # the .scr file association, which adds /S and would start the screensaver itself.
+          $run = [Diagnostics.Process]::Start([Diagnostics.ProcessStartInfo]@{ FileName = $scr; Arguments = '/a'; UseShellExecute = $false })
+          if (-not $run.WaitForExit(30000) -or $run.ExitCode -ne 0) { throw 'the installed .scr does not start' }
+
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $pkg 'Odinstaluj.ps1')
+          if ($LASTEXITCODE -ne 0) { throw 'Odinstaluj.ps1 failed' }
+          if (Test-Path $scr) { throw 'the .scr is still in System32' }
+          if ((Get-ItemProperty 'HKCU:\Control Panel\Desktop').'SCRNSAVE.EXE') { throw 'still set as the screensaver' }
+          Write-Host 'installer and uninstaller OK'

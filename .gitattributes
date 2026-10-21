@@ -1,0 +1,2 @@
+# Windows scripts keep their CRLF line endings and UTF-8 BOM (Windows PowerShell 5.1 needs the BOM).
+windows-installer/** -text

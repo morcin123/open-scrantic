@@ -1,0 +1,52 @@
+﻿JOHNNY CASTAWAY - wygaszacz ekranu dla Windows 11
+==================================================
+
+Klasyczny wygaszacz Johnny Castaway (Sierra/Dynamix, 1992) z zegarem i pogodą
+u góry ekranu. Silnik: open-scrantic (Rust), fork z dodatkami:
+https://github.com/morcin123/open-scrantic
+
+
+INSTALACJA
+----------
+1. Rozpakuj cały ten folder (np. na pulpit).
+2. Kliknij dwukrotnie  Zainstaluj.cmd
+   - Windows zapyta o uprawnienia administratora (kopiowanie do System32) - zgódź się.
+   - Jeśli SmartScreen ostrzeże, że plik jest nieznany: "Więcej informacji" -> "Uruchom mimo to".
+     (Program nie jest podpisany cyfrowo, stąd ostrzeżenie.)
+3. Otworzy się okno "Ustawienia wygaszacza ekranu" - sprawdź, że wybrany jest
+   "Johnny Castaway" i kliknij OK.
+
+Instalator:
+  - kopiuje pliki gry (folder "dane") do  %APPDATA%\OpenScrantic
+  - kopiuje wygaszacz do  C:\Windows\System32\JohnnyCastaway.scr
+  - ustawia go jako wygaszacz (po 5 minutach, jeśli nie miałeś ustawionego czasu)
+  - przy pierwszej instalacji ustawia pogodę dla Warszawy
+
+
+USTAWIENIA
+----------
+Ustawienia -> Personalizacja -> Ekran blokady -> Wygaszacz ekranu -> "Ustawienia...":
+  Obraz:              Tło, Chmury, Fale, Wygładzanie obrazu
+  Dźwięk i nakładka:  Dźwięki, Lepszy dźwięk, Zegar, Pogoda
+  Miejscowość dla pogody (puste = według adresu IP, np. przez VPN może wyjść inne miasto)
+
+Czas do uruchomienia ustawiasz w tym samym oknie Windows ("Czekaj: X minut").
+"Podgląd" uruchamia wygaszacz od razu. Ruch myszy lub dowolny klawisz go zamyka.
+
+Pogoda pochodzi z wttr.in i odświeża się co 15 minut (potrzebny internet;
+bez niego pokazuje się sam zegar).
+
+
+ODINSTALOWANIE
+--------------
+Kliknij dwukrotnie  Odinstaluj.cmd
+Pliki gry i postęp historii zostają w %APPDATA%\OpenScrantic - usuń ten folder
+ręcznie, jeśli już ich nie potrzebujesz.
+
+
+PLIKI
+-----
+JohnnyCastaway.scr   wygaszacz (zbudowany przez GitHub Actions z forka)
+dane\                oryginalne pliki gry: SCRANTIC.SCR, RESOURCE.MAP, RESOURCE.001
+Zainstaluj.cmd/.ps1  instalator
+Odinstaluj.cmd/.ps1  deinstalator
