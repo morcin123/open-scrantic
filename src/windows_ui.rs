@@ -4,6 +4,7 @@
 
 use std::num::NonZeroIsize;
 use std::ptr::{null, null_mut};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use winit::dpi::{PhysicalPosition, PhysicalSize};
@@ -24,33 +25,63 @@ use windows_sys::Win32::UI::HiDpi::{
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     BM_GETCHECK, BM_SETCHECK, BS_AUTOCHECKBOX, BS_DEFPUSHBUTTON, BS_PUSHBUTTON, CreateWindowExW, DefWindowProcW,
-    DestroyWindow, DispatchMessageW, GetClientRect, GetDlgItem, GetMessageW, GetSystemMetrics, GetWindowRect,
-    IDC_ARROW, IDCANCEL, IDOK, IsDialogMessageW, IsWindow, LoadCursorW, MB_ICONERROR, MB_OK, MB_SETFOREGROUND, MSG,
-    MessageBoxW, NONCLIENTMETRICSW, PostQuitMessage, RegisterClassW, SM_CXSCREEN, SM_CYSCREEN, SPI_GETNONCLIENTMETRICS,
-    SW_SHOW, SendMessageW, SetForegroundWindow, ShowWindow, TranslateMessage, UnregisterClassW, WM_CLOSE, WM_COMMAND,
-    WM_DESTROY, WM_SETFONT, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_EX_DLGMODALFRAME, WS_POPUP, WS_SYSMENU, WS_TABSTOP,
-    WS_VISIBLE,
+    DestroyWindow, DispatchMessageW, ES_AUTOHSCROLL, GetClientRect, GetDlgItem, GetMessageW, GetSystemMetrics,
+    GetWindowRect, GetWindowTextLengthW, GetWindowTextW, IDC_ARROW, IDCANCEL, IDOK, IsDialogMessageW, IsWindow,
+    LoadCursorW, MB_ICONERROR, MB_OK, MB_SETFOREGROUND, MSG, MessageBoxW, NONCLIENTMETRICSW, PostQuitMessage,
+    RegisterClassW, SM_CXSCREEN, SM_CYSCREEN, SPI_GETNONCLIENTMETRICS, SW_SHOW, SendMessageW, SetForegroundWindow,
+    ShowWindow, TranslateMessage, UnregisterClassW, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_SETFONT, WNDCLASSW, WS_BORDER,
+    WS_CAPTION, WS_CHILD, WS_EX_DLGMODALFRAME, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
 };
 
-const TITLE: &str = "Open Scrantic - Settings";
+const TITLE: &str = "Johnny Castaway – ustawienia";
 const CLASS: &str = "OpenScranticSettings";
-const LABELS: [&str; 4] = ["Background", "Clouds", "Waves", "Sounds"];
+/// Number of checkboxes in [`Settings::checks`].
+pub const CHECKS: usize = 8;
+/// In the order of [`Settings::checks`]: the first four in the left column, the rest in the right one.
+const LABELS: [&str; CHECKS] = [
+    "Tło",
+    "Chmury",
+    "Fale",
+    "Wygładzanie obrazu",
+    "Dźwięki",
+    "Lepszy dźwięk",
+    "Zegar",
+    "Pogoda",
+];
+const COLUMNS: [&str; 2] = ["Obraz", "Dźwięk i nakładka"];
 /// Control id of the first checkbox; the others follow.
 const FIRST_CHECKBOX: i32 = 101;
-/// Set in [`RESULT`] when the user pressed OK; the low bits hold the four checkboxes.
-const ACCEPTED: u32 = 1 << 8;
+/// Control id of the weather place field.
+const LOCATION_FIELD: i32 = 120;
+/// Longest place the field accepts (the INI keeps at most this many characters too).
+const LOCATION_MAX: usize = 80;
+/// Set in [`RESULT`] when the user pressed OK; the low bits hold the checkboxes.
+const ACCEPTED: u32 = 1 << CHECKS;
 const CHECKED: usize = 1;
 
-const CLIENT_W: i32 = 280;
-const CLIENT_H: i32 = 188;
-/// `SS_CENTER`: static text centered in its box.
+const CLIENT_W: i32 = 420;
+const CLIENT_H: i32 = 292;
+/// `SS_CENTER`: static text centered in its box; `SS_LEFT` (0) is the default.
 const SS_CENTER: u32 = 1;
-const CHECKBOX_W: i32 = 110;
-const BUTTON_W: i32 = 76;
+/// `EM_LIMITTEXT` (in `Win32_UI_Controls`, a feature this crate does not otherwise need): caps an edit field.
+const EM_LIMITTEXT: u32 = 0x00C5;
+const MARGIN: i32 = 24;
+const COLUMN_W: i32 = 180;
+const BUTTON_W: i32 = 84;
 const BUTTON_GAP: i32 = 12;
 
 /// Outcome of the dialog, shared with the window procedure (there is one dialog per process).
 static RESULT: AtomicU32 = AtomicU32::new(0);
+/// Text of the place field when OK was pressed.
+static LOCATION: Mutex<String> = Mutex::new(String::new());
+
+/// What the settings dialog edits: the checkboxes (Background, Clouds, Waves, Dedither, Sounds, SoftAudio, Clock,
+/// Weather) and the place of the weather report.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Settings {
+    pub checks: [bool; CHECKS],
+    pub location: String,
+}
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
@@ -136,6 +167,18 @@ unsafe fn read_checks(hwnd: HWND) -> u32 {
     })
 }
 
+/// Text of the place field.
+unsafe fn read_location(hwnd: HWND) -> String {
+    // SAFETY: the field is a child of `hwnd`; `buf` has room for the text and its NUL.
+    unsafe {
+        let field = GetDlgItem(hwnd, LOCATION_FIELD);
+        let len = GetWindowTextLengthW(field).max(0) as usize;
+        let mut buf = vec![0u16; len + 1];
+        let n = GetWindowTextW(field, buf.as_mut_ptr(), buf.len() as i32).max(0) as usize;
+        String::from_utf16_lossy(&buf[..n.min(len)])
+    }
+}
+
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     // SAFETY: called by the system with the arguments of a message for `hwnd`.
     unsafe {
@@ -143,6 +186,9 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             WM_COMMAND => {
                 match (wparam & 0xFFFF) as i32 {
                     IDOK => {
+                        if let Ok(mut place) = LOCATION.lock() {
+                            *place = read_location(hwnd);
+                        }
                         RESULT.store(read_checks(hwnd) | ACCEPTED, Ordering::Relaxed);
                         DestroyWindow(hwnd);
                     }
@@ -166,10 +212,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
     }
 }
 
-/// Shows the modal settings dialog with the Background, Clouds, Waves and Sounds checkboxes preset to
-/// `initial`. Returns the new values on OK, `None` on Cancel (or if the dialog cannot be created).
-/// `owner` is the window handle Windows passes after `/c:`; it is disabled while the dialog is open.
-pub fn settings_dialog(initial: [bool; 4], owner: Option<isize>) -> Option<[bool; 4]> {
+/// Shows the modal settings dialog preset to `initial`. Returns the new values on OK, `None` on Cancel (or if the
+/// dialog cannot be created). `owner` is the window handle Windows passes after `/c:`; it is disabled while the
+/// dialog is open.
+pub fn settings_dialog(initial: &Settings, owner: Option<isize>) -> Option<Settings> {
     RESULT.store(0, Ordering::Relaxed);
     let class = wide(CLASS);
     // SAFETY: plain Win32 calls; every pointer passed is valid for the duration of its call.
@@ -248,33 +294,64 @@ pub fn settings_dialog(initial: [bool; 4], owner: Option<isize>) -> Option<[bool
         } else {
             message_font
         } as usize;
-        let margin = px(16);
+        let margin = px(MARGIN);
         child(
             hwnd,
             "STATIC",
-            "Choose which features are enabled:",
+            "Wybierz, co ma być włączone:",
             SS_CENTER,
             [margin, px(14), cw - 2 * margin, px(18)],
             -1,
             font,
         );
-        let (check_w, row) = (px(CHECKBOX_W), px(24));
+        let (column_w, row) = (px(COLUMN_W), px(24));
+        let column_x = |c: i32| margin + c * (cw - 2 * margin) / 2;
+        for (c, header) in COLUMNS.iter().enumerate() {
+            child(
+                hwnd,
+                "STATIC",
+                header,
+                0,
+                [column_x(c as i32), px(42), column_w, px(18)],
+                -1,
+                font,
+            );
+        }
         for (i, label) in LABELS.iter().enumerate() {
             let id = FIRST_CHECKBOX + i as i32;
-            let y = px(40) + row * i as i32;
+            let (c, r) = ((i / 4) as i32, (i % 4) as i32);
             let style = WS_TABSTOP | BS_AUTOCHECKBOX as u32;
             let check = child(
                 hwnd,
                 "BUTTON",
                 label,
                 style,
-                [(cw - check_w) / 2, y, check_w, px(20)],
+                [column_x(c) + px(8), px(64) + row * r, column_w, px(20)],
                 id,
                 font,
             );
-            SendMessageW(check, BM_SETCHECK, usize::from(initial[i]), 0);
+            SendMessageW(check, BM_SETCHECK, usize::from(initial.checks[i]), 0);
         }
-        let (button_w, gap, y, button_h) = (px(BUTTON_W), px(BUTTON_GAP), px(146), px(26));
+        child(
+            hwnd,
+            "STATIC",
+            "Miejscowość dla pogody (puste = według adresu IP):",
+            0,
+            [margin, px(170), cw - 2 * margin, px(18)],
+            -1,
+            font,
+        );
+        let field = child(
+            hwnd,
+            "EDIT",
+            &initial.location,
+            WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL as u32,
+            [margin, px(192), cw - 2 * margin, px(24)],
+            LOCATION_FIELD,
+            font,
+        );
+        SendMessageW(field, EM_LIMITTEXT, LOCATION_MAX, 0);
+        let (button_w, gap, y, button_h) = (px(BUTTON_W), px(BUTTON_GAP), px(244), px(28));
         let x = (cw - 2 * button_w - gap) / 2;
         let ok = WS_TABSTOP | BS_DEFPUSHBUTTON as u32;
         child(hwnd, "BUTTON", "OK", ok, [x, y, button_w, button_h], IDOK, font);
@@ -282,7 +359,7 @@ pub fn settings_dialog(initial: [bool; 4], owner: Option<isize>) -> Option<[bool
         child(
             hwnd,
             "BUTTON",
-            "Cancel",
+            "Anuluj",
             cancel,
             [x + button_w + gap, y, button_w, button_h],
             IDCANCEL,
@@ -316,7 +393,10 @@ pub fn settings_dialog(initial: [bool; 4], owner: Option<isize>) -> Option<[bool
         }
     }
     let bits = RESULT.load(Ordering::Relaxed);
-    (bits & ACCEPTED != 0).then(|| std::array::from_fn(|i| bits >> i & 1 != 0))
+    (bits & ACCEPTED != 0).then(|| Settings {
+        checks: std::array::from_fn(|i| bits >> i & 1 != 0),
+        location: LOCATION.lock().map(|place| place.clone()).unwrap_or_default(),
+    })
 }
 
 /// `true` if another screensaver instance is already running in this session. The first caller

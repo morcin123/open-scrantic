@@ -24,6 +24,7 @@ use winit::window::{Fullscreen, Window, WindowAttributes, WindowId};
 use open_scrantic::engine::config::Config;
 use open_scrantic::engine::gfx::{HEIGHT, WIDTH};
 use open_scrantic::engine::{Clock, Engine, STEP_MS, TICK_MS};
+use open_scrantic::overlay::Overlay;
 use open_scrantic::present;
 #[cfg(feature = "screensaver")]
 use open_scrantic::windows_ui;
@@ -59,6 +60,8 @@ struct App {
     #[cfg(feature = "screensaver")]
     input: Option<saver::InputGuard>,
     dedither: bool,
+    /// Clock and weather over the picture (this fork's addition), if enabled.
+    overlay: Option<Overlay>,
     /// Settings as they are in the INI, which a run with overrides must write back unchanged.
     saved: Config,
     /// F12 was pressed; the next redraw saves the frame it draws.
@@ -144,6 +147,9 @@ impl App {
             present::plain(px, &self.engine.palette)
         };
         present::scale(&rgb, &mut buf, w, h);
+        if let Some(overlay) = &mut self.overlay {
+            overlay.draw(&mut buf, w, h);
+        }
         let _ = buf.present();
     }
 }
@@ -311,7 +317,9 @@ fn main() {
         .unwrap_or(0);
     let saved = Config::load();
     let engine = Engine::new(data, opts.config(&saved), seed).unwrap_or_else(|e| opts.fail(e));
-    let audio = opts.audio();
+    let audio = opts.audio(&saved);
+    let dedither = opts.dedither(&saved);
+    let overlay = opts.overlay(&saved);
     let event_loop = EventLoop::new().unwrap_or_else(|e| opts.fail(e));
     let mut app = App {
         engine,
@@ -324,7 +332,8 @@ fn main() {
         target: opts.surface(),
         #[cfg(feature = "screensaver")]
         input: opts.input_guard(),
-        dedither: opts.dedither,
+        dedither,
+        overlay,
         saved,
         screenshot: false,
         intro_drawn: false,

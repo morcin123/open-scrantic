@@ -2,13 +2,14 @@
 //! (`--features screensaver`) has none of this: see `saver.rs`.
 
 use open_scrantic::engine::config::Config;
+use open_scrantic::overlay::Overlay;
 use open_scrantic::{assets, audio};
 
 use crate::Surface;
 
 const USAGE: &str = "\
 Usage: open-scrantic [--fullscreen] [--dedither] [--soft-audio] [--background=0|1] [--clouds=0|1]
-                     [--waves=0|1] [--sounds=0|1]
+                     [--waves=0|1] [--sounds=0|1] [--clock] [--weather]
 
 Options:
   --fullscreen    start fullscreen instead of in a window
@@ -18,6 +19,8 @@ Options:
   --clouds=N      override Clouds of SCRANTIC.INI for this run
   --waves=N       override Waves of SCRANTIC.INI for this run
   --sounds=N      override Sounds of SCRANTIC.INI for this run
+  --clock         show the time and date at the top of the screen
+  --weather       show the weather there (place: WeatherLocation of SCRANTIC.INI, empty = from the IP)
   -V, --version   print the version and exit
   -h, --help      print this help and exit
 
@@ -44,8 +47,10 @@ impl Overrides {
 
 pub struct Options {
     fullscreen: bool,
-    pub dedither: bool,
-    pub soft_audio: bool,
+    dedither: bool,
+    soft_audio: bool,
+    clock: bool,
+    weather: bool,
     overrides: Overrides,
 }
 
@@ -77,9 +82,23 @@ impl Options {
         }
     }
 
+    /// Whether the picture is dedithered: only with `--dedither` (the INI's `Dedither` is for the screensaver).
+    pub fn dedither(&self, _saved: &Config) -> bool {
+        self.dedither
+    }
+
     /// The sound output.
-    pub fn audio(&self) -> Option<audio::Audio> {
+    pub fn audio(&self, _saved: &Config) -> Option<audio::Audio> {
         audio::Audio::new(self.soft_audio)
+    }
+
+    /// The clock and weather overlay, only with `--clock` or `--weather`; the place comes from the INI.
+    pub fn overlay(&self, saved: &Config) -> Option<Overlay> {
+        Overlay::new(&Config {
+            clock: self.clock,
+            weather: self.weather,
+            ..saved.clone()
+        })
     }
 }
 
@@ -98,6 +117,8 @@ pub fn parse_args() -> Result<Option<Options>, String> {
         fullscreen: false,
         dedither: false,
         soft_audio: false,
+        clock: false,
+        weather: false,
         overrides: Overrides::default(),
     };
     for a in std::env::args().skip(1) {
@@ -105,6 +126,8 @@ pub fn parse_args() -> Result<Option<Options>, String> {
             "--fullscreen" => o.fullscreen = true,
             "--dedither" => o.dedither = true,
             "--soft-audio" => o.soft_audio = true,
+            "--clock" => o.clock = true,
+            "--weather" => o.weather = true,
             "-V" | "--version" => {
                 println!("open-scrantic {}", env!("CARGO_PKG_VERSION"));
                 return Ok(None);

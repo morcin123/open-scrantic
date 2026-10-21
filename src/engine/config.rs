@@ -22,7 +22,18 @@ pub struct Config {
     pub day: i32,
     /// Start of the day/night cycle, as HHMM ("StartTime").
     pub start_time: i32,
+    /// Not in the original: presentation options of the Windows screensaver build, which has no command line.
+    pub dedither: bool,
+    pub soft_audio: bool,
+    /// Not in the original: the clock and weather drawn over the picture (see `overlay.rs`).
+    pub clock: bool,
+    pub weather: bool,
+    /// Place for the weather report, as typed by the user; empty means located from the IP address.
+    pub weather_location: String,
 }
+
+/// Longest `WeatherLocation` kept; anything after it is dropped.
+const MAX_LOCATION: usize = 80;
 
 impl Default for Config {
     fn default() -> Self {
@@ -38,8 +49,24 @@ impl Default for Config {
             month: 0,
             day: 0,
             start_time: 900,
+            dedither: true,
+            soft_audio: true,
+            clock: true,
+            weather: true,
+            weather_location: String::new(),
         }
     }
+}
+
+/// `WeatherLocation` as stored: trimmed, on one line, at most [`MAX_LOCATION`] characters.
+pub fn clean_location(raw: &str) -> String {
+    raw.trim()
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_LOCATION)
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 impl Config {
@@ -78,6 +105,12 @@ impl Config {
                 continue;
             }
             let (key, value) = line.split_once('=')?;
+            let key = key.trim().to_ascii_lowercase();
+            // The only text value; any string is valid.
+            if key == "weatherlocation" {
+                cfg.weather_location = clean_location(value);
+                continue;
+            }
             let v = value.trim().parse::<i32>().ok();
             let flag = |v: Option<i32>| match v? {
                 0 => Some(false),
@@ -85,11 +118,15 @@ impl Config {
                 _ => None,
             };
             let range = |v: Option<i32>, hi: i32| v.filter(|n| (0..=hi).contains(n));
-            match key.trim().to_ascii_lowercase().as_str() {
+            match key.as_str() {
                 "background" => cfg.background = flag(v)?,
                 "clouds" => cfg.clouds = flag(v)?,
                 "waves" => cfg.waves = flag(v)?,
                 "sounds" => cfg.sounds = flag(v)?,
+                "dedither" => cfg.dedither = flag(v)?,
+                "softaudio" => cfg.soft_audio = flag(v)?,
+                "clock" => cfg.clock = flag(v)?,
+                "weather" => cfg.weather = flag(v)?,
                 "numdays" => cfg.num_days = range(v, 11)?,
                 "introduction" => cfg.intro = range(v, 12)?,
                 "currentyear" => cfg.year = range(v, 9999)?,
@@ -112,7 +149,8 @@ impl Config {
         let b = |v: bool| i32::from(v);
         let text = format!(
             "{SECTION}\nBackground={}\nClouds={}\nWaves={}\nSounds={}\nNumDays={}\n\
-             Introduction={}\nCurrentYear={}\nCurrentMonth={}\nCurrentDay={}\nStartTime={}\n",
+             Introduction={}\nCurrentYear={}\nCurrentMonth={}\nCurrentDay={}\nStartTime={}\n\
+             Dedither={}\nSoftAudio={}\nClock={}\nWeather={}\nWeatherLocation={}\n",
             b(self.background),
             b(self.clouds),
             b(self.waves),
@@ -122,7 +160,12 @@ impl Config {
             self.year,
             self.month,
             self.day,
-            self.start_time
+            self.start_time,
+            b(self.dedither),
+            b(self.soft_audio),
+            b(self.clock),
+            b(self.weather),
+            clean_location(&self.weather_location),
         );
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir)?;
@@ -158,6 +201,27 @@ mod tests {
         ] {
             assert!(Config::parse(&format!("{SECTION}\n{bad}\n")).is_none(), "{bad}");
         }
+    }
+
+    #[test]
+    fn fork_options_default_on_and_parse() {
+        let cfg = Config::parse(&format!("{SECTION}\n")).unwrap();
+        assert!(cfg.dedither && cfg.soft_audio && cfg.clock && cfg.weather);
+        assert_eq!(cfg.weather_location, "");
+        let cfg = Config::parse(&format!(
+            "{SECTION}\nClock=0\nWeather=1\nSoftAudio=0\nWeatherLocation=  Kraków = centrum \n"
+        ))
+        .unwrap();
+        assert!(!cfg.clock && cfg.weather && !cfg.soft_audio && cfg.dedither);
+        assert_eq!(cfg.weather_location, "Kraków = centrum");
+        assert!(Config::parse(&format!("{SECTION}\nClock=2\n")).is_none());
+    }
+
+    #[test]
+    fn locations_are_one_trimmed_bounded_line() {
+        assert_eq!(clean_location("  Warszawa \t"), "Warszawa");
+        assert_eq!(clean_location("a\u{7}b"), "ab");
+        assert_eq!(clean_location(&"x".repeat(200)).len(), MAX_LOCATION);
     }
 
     #[test]

@@ -6,7 +6,8 @@ use std::time::{Duration, Instant};
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, WindowEvent};
 
-use open_scrantic::engine::config::Config;
+use open_scrantic::engine::config::{Config, clean_location};
+use open_scrantic::overlay::Overlay;
 use open_scrantic::windows_ui;
 
 use crate::Surface;
@@ -29,8 +30,6 @@ pub struct Options {
     /// The whole screen for a run, the preview pane for `/p`. A preview is silent and neither ends on input
     /// nor saves progress.
     surface: Surface,
-    pub dedither: bool,
-    pub soft_audio: bool,
 }
 
 impl Options {
@@ -63,20 +62,31 @@ impl Options {
         (self.surface == Surface::Fullscreen).then(InputGuard::default)
     }
 
-    /// The sound output; a preview has none.
-    pub fn audio(&self) -> Option<audio::Audio> {
+    /// Whether the picture is dedithered, as set in the INI (on by default).
+    pub fn dedither(&self, saved: &Config) -> bool {
+        saved.dedither
+    }
+
+    /// The sound output, softened as set in the INI; a preview has none.
+    pub fn audio(&self, saved: &Config) -> Option<audio::Audio> {
         match self.surface {
-            Surface::Fullscreen => audio::Audio::new(self.soft_audio),
+            Surface::Fullscreen => audio::Audio::new(saved.soft_audio),
+            _ => None,
+        }
+    }
+
+    /// The clock and weather over the screen, as set in the INI; the small preview has none.
+    pub fn overlay(&self, saved: &Config) -> Option<Overlay> {
+        match self.surface {
+            Surface::Fullscreen => Overlay::new(saved),
             _ => None,
         }
     }
 }
 
-/// The screensaver always runs fullscreen with the image and sound improvements on.
+/// The screensaver always runs fullscreen.
 const OPTIONS: Options = Options {
     surface: Surface::Fullscreen,
-    dedither: true,
-    soft_audio: true,
 };
 
 /// `/c:1234`, `/p 1234` and `/p:1234` carry a window handle; the part after the colon is `inline`,
@@ -120,8 +130,6 @@ pub fn start() -> Option<Options> {
         Mode::Run => Some(OPTIONS),
         Mode::Preview(parent) => Some(Options {
             surface: Surface::Embedded(parent),
-            soft_audio: false,
-            ..OPTIONS
         }),
         Mode::Configure(owner) => {
             configure(owner);
@@ -149,17 +157,40 @@ Copy SCRANTIC.SCR, RESOURCE.MAP and RESOURCE.001 of the original screensaver to:
     }
 }
 
-/// `/c`: lets the user toggle the four INI options. The INI lives with the original files, so without them
-/// there is nothing to configure yet.
+/// `/c`: lets the user change the INI options, those of the original and this fork's (picture, sound, clock,
+/// weather and its place). The INI lives with the original files, so without them there is nothing to configure
+/// yet.
 fn configure(owner: Option<isize>) {
     if let Err(e) = assets::locate(&open_scrantic::data_dirs()) {
         windows_ui::error_box(&data_error_message(&e));
         return;
     }
     let mut cfg = Config::load();
-    let current = [cfg.background, cfg.clouds, cfg.waves, cfg.sounds];
-    if let Some(new) = windows_ui::settings_dialog(current, owner) {
-        [cfg.background, cfg.clouds, cfg.waves, cfg.sounds] = new;
+    let current = windows_ui::Settings {
+        checks: [
+            cfg.background,
+            cfg.clouds,
+            cfg.waves,
+            cfg.dedither,
+            cfg.sounds,
+            cfg.soft_audio,
+            cfg.clock,
+            cfg.weather,
+        ],
+        location: cfg.weather_location.clone(),
+    };
+    if let Some(new) = windows_ui::settings_dialog(&current, owner) {
+        [
+            cfg.background,
+            cfg.clouds,
+            cfg.waves,
+            cfg.dedither,
+            cfg.sounds,
+            cfg.soft_audio,
+            cfg.clock,
+            cfg.weather,
+        ] = new.checks;
+        cfg.weather_location = clean_location(&new.location);
         if let Err(e) = cfg.save() {
             windows_ui::error_box(&format!("Cannot save {}: {e}", Config::path().display()));
         }

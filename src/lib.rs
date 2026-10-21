@@ -7,6 +7,7 @@
 pub mod assets;
 pub mod audio;
 pub mod engine;
+pub mod overlay;
 pub mod present;
 #[cfg(all(feature = "screensaver", not(windows)))]
 compile_error!("the `screensaver` feature builds the Windows .scr and only works on Windows");
