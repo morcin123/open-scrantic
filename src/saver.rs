@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, WindowEvent};
 
-use open_scrantic::engine::config::{Config, clean_location};
+use open_scrantic::engine::config::{Config, clean_coords, clean_location};
 use open_scrantic::overlay::Overlay;
 use open_scrantic::windows_ui;
 
@@ -178,6 +178,7 @@ fn configure(owner: Option<isize>) {
             cfg.weather,
         ],
         location: cfg.weather_location.clone(),
+        coords: cfg.weather_coords.clone(),
     };
     if let Some(new) = windows_ui::settings_dialog(&current, owner) {
         [
@@ -191,6 +192,12 @@ fn configure(owner: Option<isize>) {
             cfg.weather,
         ] = new.checks;
         cfg.weather_location = clean_location(&new.location);
+        // Coordinates belong to a place picked from the list; an emptied field means the place of the IP address.
+        cfg.weather_coords = if cfg.weather_location.is_empty() {
+            String::new()
+        } else {
+            clean_coords(&new.coords)
+        };
         if let Err(e) = cfg.save() {
             windows_ui::error_box(&format!("Cannot save {}: {e}", Config::path().display()));
         }

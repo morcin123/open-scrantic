@@ -15,6 +15,7 @@ publish = false
 chrono = "0.4.45"
 fontdue = "0.9.5"
 rodio = { version = "0.23.0", default-features = false, features = ["playback"] }
+serde_json = "1"
 softbuffer = "0.4.8"
 winit = "0.30.13"
 

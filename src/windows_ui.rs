@@ -5,7 +5,7 @@
 use std::num::NonZeroIsize;
 use std::ptr::{null, null_mut};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::raw_window_handle::{RawWindowHandle, Win32WindowHandle};
@@ -27,11 +27,14 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     BM_GETCHECK, BM_SETCHECK, BS_AUTOCHECKBOX, BS_DEFPUSHBUTTON, BS_PUSHBUTTON, CreateWindowExW, DefWindowProcW,
     DestroyWindow, DispatchMessageW, ES_AUTOHSCROLL, GetClientRect, GetDlgItem, GetMessageW, GetSystemMetrics,
     GetWindowRect, GetWindowTextLengthW, GetWindowTextW, IDC_ARROW, IDCANCEL, IDOK, IsDialogMessageW, IsWindow,
-    LoadCursorW, MB_ICONERROR, MB_OK, MB_SETFOREGROUND, MSG, MessageBoxW, NONCLIENTMETRICSW, PostQuitMessage,
-    RegisterClassW, SM_CXSCREEN, SM_CYSCREEN, SPI_GETNONCLIENTMETRICS, SW_SHOW, SendMessageW, SetForegroundWindow,
-    ShowWindow, TranslateMessage, UnregisterClassW, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_SETFONT, WNDCLASSW, WS_BORDER,
-    WS_CAPTION, WS_CHILD, WS_EX_DLGMODALFRAME, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
+    KillTimer, LoadCursorW, MB_ICONERROR, MB_OK, MB_SETFOREGROUND, MSG, MessageBoxW, NONCLIENTMETRICSW, PostMessageW,
+    PostQuitMessage, RegisterClassW, SM_CXSCREEN, SM_CYSCREEN, SPI_GETNONCLIENTMETRICS, SW_SHOW, SendMessageW,
+    SetForegroundWindow, SetTimer, SetWindowTextW, ShowWindow, TranslateMessage, UnregisterClassW, WM_APP, WM_CLOSE,
+    WM_COMMAND, WM_DESTROY, WM_SETFONT, WM_TIMER, WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD, WS_EX_DLGMODALFRAME,
+    WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
+
+use crate::overlay::{Place, search_places};
 
 const TITLE: &str = "Johnny Castaway – ustawienia";
 const CLASS: &str = "OpenScranticSettings";
@@ -55,16 +58,32 @@ const FIRST_CHECKBOX: i32 = 101;
 const LOCATION_FIELD: i32 = 120;
 /// Longest place the field accepts (the INI keeps at most this many characters too).
 const LOCATION_MAX: usize = 80;
+/// Control id of the list of places matching the field.
+const PLACE_LIST: i32 = 121;
+/// The search runs this long after the last keystroke in the field.
+const SEARCH_TIMER: usize = 1;
+const SEARCH_DELAY_MS: u32 = 400;
+/// Posted by the search thread when its results are in [`PLACES`]: `wparam` is the search generation, `lparam` 1
+/// when nothing was found.
+const WM_PLACES: u32 = WM_APP + 1;
 /// Set in [`RESULT`] when the user pressed OK; the low bits hold the checkboxes.
 const ACCEPTED: u32 = 1 << CHECKS;
 const CHECKED: usize = 1;
 
 const CLIENT_W: i32 = 420;
-const CLIENT_H: i32 = 292;
+const CLIENT_H: i32 = 428;
 /// `SS_CENTER`: static text centered in its box; `SS_LEFT` (0) is the default.
 const SS_CENTER: u32 = 1;
-/// `EM_LIMITTEXT` (in `Win32_UI_Controls`, a feature this crate does not otherwise need): caps an edit field.
+// Edit and list box messages, notifications and styles (in `Win32_UI_Controls`, a feature this crate does not
+// otherwise need).
 const EM_LIMITTEXT: u32 = 0x00C5;
+const EN_CHANGE: u32 = 0x0300;
+const LB_ADDSTRING: u32 = 0x0180;
+const LB_RESETCONTENT: u32 = 0x0184;
+const LB_GETCURSEL: u32 = 0x0188;
+const LBN_SELCHANGE: u32 = 1;
+const LBS_NOTIFY: u32 = 0x0001;
+const LBS_NOINTEGRALHEIGHT: u32 = 0x0100;
 const MARGIN: i32 = 24;
 const COLUMN_W: i32 = 180;
 const BUTTON_W: i32 = 84;
@@ -74,6 +93,14 @@ const BUTTON_GAP: i32 = 12;
 static RESULT: AtomicU32 = AtomicU32::new(0);
 /// Text of the place field when OK was pressed.
 static LOCATION: Mutex<String> = Mutex::new(String::new());
+/// `lat,lon` of the place picked from the list; cleared when the field is edited by hand.
+static COORDS: Mutex<String> = Mutex::new(String::new());
+/// Places in the list, in its order.
+static PLACES: Mutex<Vec<Place>> = Mutex::new(Vec::new());
+/// Bumped by every search: only the latest one may fill the list.
+static SEARCH_GENERATION: AtomicU32 = AtomicU32::new(0);
+/// Set while the dialog itself writes the field, so that its change notification does not start a search.
+static SETTING_FIELD: AtomicBool = AtomicBool::new(false);
 
 /// What the settings dialog edits: the checkboxes (Background, Clouds, Waves, Dedither, Sounds, SoftAudio, Clock,
 /// Weather) and the place of the weather report.
@@ -81,6 +108,8 @@ static LOCATION: Mutex<String> = Mutex::new(String::new());
 pub struct Settings {
     pub checks: [bool; CHECKS],
     pub location: String,
+    /// `lat,lon` of `location` when it was picked from the search, else empty.
+    pub coords: String,
 }
 
 fn wide(s: &str) -> Vec<u16> {
@@ -179,24 +208,123 @@ unsafe fn read_location(hwnd: HWND) -> String {
     }
 }
 
+/// Searches for the text of the place field on a worker thread (the dialog stays responsive while curl runs);
+/// the result arrives as [`WM_PLACES`].
+unsafe fn start_search(hwnd: HWND) {
+    // SAFETY: `hwnd` is the live dialog.
+    let query = unsafe { read_location(hwnd) }.trim().to_string();
+    let generation = SEARCH_GENERATION.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+    if query.chars().count() < 2 {
+        if let Ok(mut places) = PLACES.lock() {
+            places.clear();
+        }
+        // SAFETY: as above.
+        unsafe { show_places(hwnd, generation, false) };
+        return;
+    }
+    let target = hwnd as isize;
+    std::thread::spawn(move || {
+        let found = search_places(&query);
+        if SEARCH_GENERATION.load(Ordering::Relaxed) != generation {
+            return;
+        }
+        let nothing = found.is_empty();
+        if let Ok(mut places) = PLACES.lock() {
+            *places = found;
+        }
+        // SAFETY: posting to a window that is gone by now only fails.
+        unsafe {
+            PostMessageW(target as HWND, WM_PLACES, generation as usize, LPARAM::from(nothing));
+        }
+    });
+}
+
+/// Fills the list with [`PLACES`], if `generation` is still the latest search.
+unsafe fn show_places(hwnd: HWND, generation: u32, nothing_found: bool) {
+    if generation != SEARCH_GENERATION.load(Ordering::Relaxed) {
+        return;
+    }
+    let places = PLACES.lock().map(|p| p.clone()).unwrap_or_default();
+    let mut lines: Vec<String> = places
+        .iter()
+        .map(|p| {
+            if p.description.is_empty() {
+                p.name.clone()
+            } else {
+                format!("{}  —  {}", p.name, p.description)
+            }
+        })
+        .collect();
+    if nothing_found {
+        // Not a place: picking it does nothing, as its index is past the end of PLACES.
+        lines.push("(nie znaleziono takiej miejscowości)".to_string());
+    }
+    // SAFETY: the list is a child of `hwnd`; every string is NUL-terminated and outlives its call.
+    unsafe {
+        let list = GetDlgItem(hwnd, PLACE_LIST);
+        SendMessageW(list, LB_RESETCONTENT, 0, 0);
+        for line in lines {
+            let text = wide(&line);
+            SendMessageW(list, LB_ADDSTRING, 0, text.as_ptr() as LPARAM);
+        }
+    }
+}
+
+/// The place selected in the list goes into the field, with its coordinates.
+unsafe fn pick_place(hwnd: HWND) {
+    // SAFETY: the list and the field are children of `hwnd`; the text outlives the call.
+    unsafe {
+        let index = SendMessageW(GetDlgItem(hwnd, PLACE_LIST), LB_GETCURSEL, 0, 0);
+        let picked = usize::try_from(index)
+            .ok()
+            .and_then(|i| PLACES.lock().ok().and_then(|places| places.get(i).cloned()));
+        let Some(place) = picked else { return };
+        let name = wide(&place.name);
+        SETTING_FIELD.store(true, Ordering::Relaxed);
+        SetWindowTextW(GetDlgItem(hwnd, LOCATION_FIELD), name.as_ptr());
+        SETTING_FIELD.store(false, Ordering::Relaxed);
+        if let Ok(mut coords) = COORDS.lock() {
+            *coords = place.coords();
+        }
+    }
+}
+
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     // SAFETY: called by the system with the arguments of a message for `hwnd`.
     unsafe {
         match msg {
             WM_COMMAND => {
-                match (wparam & 0xFFFF) as i32 {
-                    IDOK => {
+                let (id, code) = ((wparam & 0xFFFF) as i32, (wparam >> 16 & 0xFFFF) as u32);
+                match (id, code) {
+                    (IDOK, _) => {
                         if let Ok(mut place) = LOCATION.lock() {
                             *place = read_location(hwnd);
                         }
                         RESULT.store(read_checks(hwnd) | ACCEPTED, Ordering::Relaxed);
                         DestroyWindow(hwnd);
                     }
-                    IDCANCEL => {
+                    (IDCANCEL, _) => {
                         DestroyWindow(hwnd);
                     }
+                    (LOCATION_FIELD, EN_CHANGE) if !SETTING_FIELD.load(Ordering::Relaxed) => {
+                        // Typed by hand: the coordinates of a place picked earlier no longer apply.
+                        if let Ok(mut coords) = COORDS.lock() {
+                            coords.clear();
+                        }
+                        SetTimer(hwnd, SEARCH_TIMER, SEARCH_DELAY_MS, None);
+                    }
+                    (PLACE_LIST, LBN_SELCHANGE) => pick_place(hwnd),
                     _ => {}
                 }
+                0
+            }
+            WM_TIMER if wparam == SEARCH_TIMER => {
+                KillTimer(hwnd, SEARCH_TIMER);
+                start_search(hwnd);
+                0
+            }
+            WM_PLACES => {
+                show_places(hwnd, wparam as u32, lparam != 0);
                 0
             }
             WM_CLOSE => {
@@ -217,6 +345,9 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
 /// dialog is open.
 pub fn settings_dialog(initial: &Settings, owner: Option<isize>) -> Option<Settings> {
     RESULT.store(0, Ordering::Relaxed);
+    if let Ok(mut coords) = COORDS.lock() {
+        coords.clone_from(&initial.coords);
+    }
     let class = wide(CLASS);
     // SAFETY: plain Win32 calls; every pointer passed is valid for the duration of its call.
     unsafe {
@@ -351,7 +482,25 @@ pub fn settings_dialog(initial: &Settings, owner: Option<isize>) -> Option<Setti
             font,
         );
         SendMessageW(field, EM_LIMITTEXT, LOCATION_MAX, 0);
-        let (button_w, gap, y, button_h) = (px(BUTTON_W), px(BUTTON_GAP), px(244), px(28));
+        child(
+            hwnd,
+            "LISTBOX",
+            "",
+            WS_TABSTOP | WS_BORDER | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT,
+            [margin, px(222), cw - 2 * margin, px(132)],
+            PLACE_LIST,
+            font,
+        );
+        child(
+            hwnd,
+            "STATIC",
+            "Wpisz nazwę i wybierz miejscowość z listy (z powiatem i województwem).",
+            0,
+            [margin, px(358), cw - 2 * margin, px(18)],
+            -1,
+            font,
+        );
+        let (button_w, gap, y, button_h) = (px(BUTTON_W), px(BUTTON_GAP), px(386), px(28));
         let x = (cw - 2 * button_w - gap) / 2;
         let ok = WS_TABSTOP | BS_DEFPUSHBUTTON as u32;
         child(hwnd, "BUTTON", "OK", ok, [x, y, button_w, button_h], IDOK, font);
@@ -396,6 +545,7 @@ pub fn settings_dialog(initial: &Settings, owner: Option<isize>) -> Option<Setti
     (bits & ACCEPTED != 0).then(|| Settings {
         checks: std::array::from_fn(|i| bits >> i & 1 != 0),
         location: LOCATION.lock().map(|place| place.clone()).unwrap_or_default(),
+        coords: COORDS.lock().map(|coords| coords.clone()).unwrap_or_default(),
     })
 }
 

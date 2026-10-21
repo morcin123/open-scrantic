@@ -28,7 +28,9 @@ USTAWIENIA
 Ustawienia -> Personalizacja -> Ekran blokady -> Wygaszacz ekranu -> "Ustawienia...":
   Obraz:              Tło, Chmury, Fale, Wygładzanie obrazu
   Dźwięk i nakładka:  Dźwięki, Lepszy dźwięk, Zegar, Pogoda
-  Miejscowość dla pogody (puste = według adresu IP, np. przez VPN może wyjść inne miasto)
+  Miejscowość dla pogody: wpisz nazwę, a pod spodem pojawi się lista pasujących
+  miejscowości z powiatem i województwem (także małe wsie) - kliknij właściwą.
+  Puste pole = według adresu IP (np. przez VPN może wyjść inne miasto).
 
 Czas do uruchomienia ustawiasz w tym samym oknie Windows ("Czekaj: X minut").
 "Podgląd" uruchamia wygaszacz od razu. Ruch myszy lub dowolny klawisz go zamyka.

@@ -36,6 +36,8 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo clippy --all-targets --features screensaver
       - run: cargo test --features screensaver
+        env:
+          OPEN_SCRANTIC_NETWORK: 1
       - run: cargo build --release --features screensaver
       - name: Smoke test
         run: |
@@ -73,6 +75,7 @@ jobs:
           $ini = [IO.File]::ReadAllBytes((Join-Path $data 'SCRANTIC.INI'))
           if ($ini[0] -eq 0xEF) { throw 'SCRANTIC.INI has a BOM' }
           if (-not ([Text.Encoding]::UTF8.GetString($ini) -match 'WeatherLocation=Warszawa')) { throw 'no WeatherLocation in SCRANTIC.INI' }
+          if (-not ([Text.Encoding]::UTF8.GetString($ini) -match 'WeatherCoords=52\.22977,21\.01178')) { throw 'no WeatherCoords in SCRANTIC.INI' }
           # The installed copy starts: /a (ignored) must exit at once with status 0. Not through `&`: that goes through
           # the .scr file association, which adds /S and would start the screensaver itself.
           $run = [Diagnostics.Process]::Start([Diagnostics.ProcessStartInfo]@{ FileName = $scr; Arguments = '/a'; UseShellExecute = $false })

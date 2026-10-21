@@ -30,6 +30,9 @@ pub struct Config {
     pub weather: bool,
     /// Place for the weather report, as typed by the user; empty means located from the IP address.
     pub weather_location: String,
+    /// `lat,lon` of that place when it was picked from the search; the report then uses these, the name is only
+    /// shown. Empty when the place was typed by hand.
+    pub weather_coords: String,
 }
 
 /// Longest `WeatherLocation` kept; anything after it is dropped.
@@ -54,7 +57,22 @@ impl Default for Config {
             clock: true,
             weather: true,
             weather_location: String::new(),
+            weather_coords: String::new(),
         }
+    }
+}
+
+/// `WeatherCoords` as stored: `lat,lon` with five decimals, or empty for anything that is not a valid pair.
+/// Lenient on purpose: a bad value here must not make [`Config::load`] reset the story progress.
+pub fn clean_coords(raw: &str) -> String {
+    let mut parts = raw.split(',').map(|p| p.trim().parse::<f64>());
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(Ok(lat)), Some(Ok(lon)), None)
+            if lat.is_finite() && lon.is_finite() && lat.abs() <= 90.0 && lon.abs() <= 180.0 =>
+        {
+            format!("{lat:.5},{lon:.5}")
+        }
+        _ => String::new(),
     }
 }
 
@@ -111,6 +129,10 @@ impl Config {
                 cfg.weather_location = clean_location(value);
                 continue;
             }
+            if key == "weathercoords" {
+                cfg.weather_coords = clean_coords(value);
+                continue;
+            }
             let v = value.trim().parse::<i32>().ok();
             let flag = |v: Option<i32>| match v? {
                 0 => Some(false),
@@ -150,7 +172,7 @@ impl Config {
         let text = format!(
             "{SECTION}\nBackground={}\nClouds={}\nWaves={}\nSounds={}\nNumDays={}\n\
              Introduction={}\nCurrentYear={}\nCurrentMonth={}\nCurrentDay={}\nStartTime={}\n\
-             Dedither={}\nSoftAudio={}\nClock={}\nWeather={}\nWeatherLocation={}\n",
+             Dedither={}\nSoftAudio={}\nClock={}\nWeather={}\nWeatherLocation={}\nWeatherCoords={}\n",
             b(self.background),
             b(self.clouds),
             b(self.waves),
@@ -166,6 +188,7 @@ impl Config {
             b(self.clock),
             b(self.weather),
             clean_location(&self.weather_location),
+            clean_coords(&self.weather_coords),
         );
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir)?;
@@ -215,6 +238,18 @@ mod tests {
         assert!(!cfg.clock && cfg.weather && !cfg.soft_audio && cfg.dedither);
         assert_eq!(cfg.weather_location, "Kraków = centrum");
         assert!(Config::parse(&format!("{SECTION}\nClock=2\n")).is_none());
+    }
+
+    #[test]
+    fn coords_are_a_valid_pair_or_nothing() {
+        assert_eq!(clean_coords(" 52.22977 , 21.01178 "), "52.22977,21.01178");
+        assert_eq!(clean_coords("-33.9,151.2"), "-33.90000,151.20000");
+        for bad in ["", "52.2", "52,21,3", "abc,21", "91,0", "0,181", "NaN,1"] {
+            assert_eq!(clean_coords(bad), "", "{bad}");
+        }
+        // A broken pair is dropped, not a reason to reset the whole file (and the story with it).
+        let cfg = Config::parse(&format!("{SECTION}\nNumDays=5\nWeatherCoords=oops\n")).unwrap();
+        assert_eq!((cfg.num_days, cfg.weather_coords.as_str()), (5, ""));
     }
 
     #[test]

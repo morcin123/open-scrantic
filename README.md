@@ -24,7 +24,7 @@ one day to the next, with the same behavior as the original.
 
 > [!NOTE]
 > **This fork** adds a clock and weather overlay (Polish labels, weather from wttr.in via the system's `curl`) and
-> a fuller settings dialog to the Windows screensaver: Dedither, SoftAudio, Clock, Weather and WeatherLocation are
+> a fuller settings dialog to the Windows screensaver (with a place search, Open-Meteo geocoding): Dedither, SoftAudio, Clock, Weather, WeatherLocation and WeatherCoords are
 > stored in `SCRANTIC.INI` next to the original keys. The regular program shows the overlay with `--clock` and
 > `--weather`. The `Windows screensaver` workflow builds `JohnnyCastaway.scr` on every push to `main` and tests the
 > installer in `windows-installer/` (its messages and `CZYTAJ.txt` are in Polish, for the user it is made for). Fonts:

@@ -32,7 +32,7 @@ foreach ($name in 'SCRANTIC.SCR', 'RESOURCE.MAP', 'RESOURCE.001') {
 $ini = Join-Path $dataDir 'SCRANTIC.INI'
 if (-not (Test-Path -LiteralPath $ini)) {
     # No BOM: the screensaver reads the INI as plain UTF-8.
-    [IO.File]::WriteAllText($ini, "[ScreenSaver.ScreenAntics]`r`nWeatherLocation=Warszawa`r`n")
+    [IO.File]::WriteAllText($ini, "[ScreenSaver.ScreenAntics]`r`nWeatherLocation=Warszawa`r`nWeatherCoords=52.22977,21.01178`r`n")
     Write-Host '     Utworzono SCRANTIC.INI (pogoda: Warszawa)'
 } else {
     Write-Host '     SCRANTIC.INI już istnieje - zostawiam Twoje ustawienia i postęp historii'

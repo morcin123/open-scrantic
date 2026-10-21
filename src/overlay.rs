@@ -111,28 +111,99 @@ fn encode_path(s: &str) -> String {
         .collect()
 }
 
-/// One fetch with the system's `curl` (shipped with Windows 10 and later, and with every Linux and macOS).
-fn fetch(location: &str) -> Option<Weather> {
-    let url = format!("https://wttr.in/{}?format=%t|%x|%l|%S|%s&m", encode_path(location));
+/// GET `url` with the system's `curl` (shipped with Windows 10 and later, and with every Linux and macOS); the body
+/// on success.
+fn curl(url: &str, seconds: u32) -> Option<String> {
     let mut cmd = std::process::Command::new("curl");
-    cmd.args(["-fsS", "--max-time", "15", &url]);
+    cmd.args(["-fsS", "--max-time", &seconds.to_string(), url]);
     // The screensaver has no console: without this flag Windows would flash one up for curl.
     #[cfg(windows)]
     std::os::windows::process::CommandExt::creation_flags(&mut cmd, 0x0800_0000); // CREATE_NO_WINDOW
     let out = cmd.output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    parse_report(&String::from_utf8_lossy(&out.stdout))
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// Starts fetching the weather in the background; the latest report shows up in the returned slot.
-fn spawn_weather(location: String) -> Arc<Mutex<Option<Weather>>> {
+/// One weather fetch for `place`: a name, `lat,lon`, or empty for the place of the IP address.
+fn fetch(place: &str) -> Option<Weather> {
+    parse_report(&curl(
+        &format!("https://wttr.in/{}?format=%t|%x|%l|%S|%s&m", encode_path(place)),
+        15,
+    )?)
+}
+
+/// A place found by [`search_places`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct Place {
+    pub name: String,
+    /// District, province and country, to tell apart the many places that share a name.
+    pub description: String,
+    pub latitude: f64,
+    pub longitude: f64,
+}
+
+impl Place {
+    /// `lat,lon`, as `WeatherCoords` stores it.
+    pub fn coords(&self) -> String {
+        crate::engine::config::clean_coords(&format!("{},{}", self.latitude, self.longitude))
+    }
+}
+
+/// Places in an Open-Meteo geocoding reply, Polish administrative words shortened.
+pub fn parse_places(json: &str) -> Vec<Place> {
+    let Ok(reply) = serde_json::from_str::<serde_json::Value>(json) else {
+        return Vec::new();
+    };
+    let Some(results) = reply["results"].as_array() else {
+        return Vec::new();
+    };
+    results
+        .iter()
+        .filter_map(|r| {
+            let name = r["name"].as_str()?.to_string();
+            let description = ["admin2", "admin1", "country"]
+                .iter()
+                .filter_map(|key| r[*key].as_str())
+                .filter(|part| !part.is_empty() && *part != name)
+                .map(|part| {
+                    let short = |prefix: &str, with: &str| {
+                        part.strip_prefix(prefix)
+                            .or_else(|| part.strip_prefix(&prefix.to_lowercase()))
+                            .map(|rest| format!("{with}{rest}"))
+                    };
+                    short("Województwo ", "woj. ")
+                        .or_else(|| short("Powiat ", "pow. "))
+                        .unwrap_or_else(|| part.to_string())
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            Some(Place {
+                name,
+                description,
+                latitude: r["latitude"].as_f64()?,
+                longitude: r["longitude"].as_f64()?,
+            })
+        })
+        .collect()
+}
+
+/// Places matching `query`, with Polish names (Open-Meteo geocoding, GeoNames data: small villages included).
+pub fn search_places(query: &str) -> Vec<Place> {
+    let url = format!(
+        "https://geocoding-api.open-meteo.com/v1/search?name={}&count=8&language=pl&format=json",
+        encode_path(query.trim())
+    );
+    curl(&url, 8).map_or_else(Vec::new, |body| parse_places(&body))
+}
+
+/// Starts fetching the weather for `place` in the background; the latest report shows up in the returned slot.
+fn spawn_weather(place: String) -> Arc<Mutex<Option<Weather>>> {
     let slot = Arc::new(Mutex::new(None));
     let writer = Arc::clone(&slot);
     std::thread::spawn(move || {
         loop {
-            let report = fetch(&location);
+            let report = fetch(&place);
             let ok = report.is_some();
             if ok && let Ok(mut s) = writer.lock() {
                 *s = report;
@@ -213,7 +284,14 @@ impl Overlay {
         let regular = Font::from_bytes(REGULAR, FontSettings::default()).ok()?;
         Some(Self {
             clock: cfg.clock,
-            weather: cfg.weather.then(|| spawn_weather(cfg.weather_location.clone())),
+            // Coordinates of a place picked from the search are exact; a typed name is looked up by wttr.in.
+            weather: cfg.weather.then(|| {
+                spawn_weather(if cfg.weather_coords.is_empty() {
+                    cfg.weather_location.clone()
+                } else {
+                    cfg.weather_coords.clone()
+                })
+            }),
             place: cfg.weather_location.clone(),
             bold,
             regular,
@@ -380,6 +458,39 @@ mod tests {
         ] {
             assert!(parse_report(bad).is_none(), "{bad}");
         }
+    }
+
+    #[test]
+    fn places_parse_with_short_district_names() {
+        let reply = r#"{"results":[
+            {"name":"Wola","admin2":"Powiat pszczyński","admin1":"Województwo śląskie","country":"Polska",
+             "latitude":50.01745,"longitude":19.12333},
+            {"name":"Nowy Sącz","admin2":"Nowy Sącz","admin1":"województwo małopolskie","country":"Polska",
+             "latitude":49.62177,"longitude":20.69705},
+            {"name":"No coordinates"}
+        ]}"#;
+        let places = parse_places(reply);
+        assert_eq!(places.len(), 2);
+        assert_eq!(places[0].description, "pow. pszczyński, woj. śląskie, Polska");
+        assert_eq!(places[1].description, "woj. małopolskie, Polska");
+        assert_eq!(places[1].coords(), "49.62177,20.69705");
+        assert!(parse_places("{}").is_empty());
+        assert!(parse_places("not json").is_empty());
+    }
+
+    /// Real requests, run only with `OPEN_SCRANTIC_NETWORK` set (the Windows screensaver workflow sets it, which
+    /// checks curl.exe and the encoding of Polish names there).
+    #[test]
+    fn live_search_and_weather_for_a_picked_place() {
+        if std::env::var_os("OPEN_SCRANTIC_NETWORK").is_none() {
+            return;
+        }
+        let places = search_places("Nowy Sącz");
+        let place = places
+            .iter()
+            .find(|p| p.name == "Nowy Sącz" && p.description.contains("małopolskie"))
+            .unwrap_or_else(|| panic!("{places:?}"));
+        assert!(fetch(&place.coords()).is_some(), "no weather for {}", place.coords());
     }
 
     #[test]
