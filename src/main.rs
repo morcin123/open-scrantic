@@ -132,6 +132,8 @@ struct App {
     /// The Wayland app id of the windows (`--app-id`), for the compositor's window rules.
     #[cfg_attr(not(all(unix, not(target_os = "macos"))), allow(dead_code))]
     app_id: Option<String>,
+    /// The monitor for the picture (`--main-monitor`), also when it is the only window.
+    main_monitor: Option<String>,
 }
 
 impl App {
@@ -334,9 +336,17 @@ impl App {
         let attrs = self.base_attributes();
         let min = PhysicalSize::new(WIDTH as u32, HEIGHT as u32);
         match self.target {
-            Surface::Fullscreen => attrs
-                .with_min_inner_size(min)
-                .with_fullscreen(Some(Fullscreen::Borderless(None))),
+            Surface::Fullscreen => {
+                // On the named monitor if there is one, else where the system puts it.
+                let monitor = self.main_monitor.as_ref().and_then(|name| {
+                    event_loop
+                        .available_monitors()
+                        .find(|m| m.name().as_deref() == Some(name.as_str()))
+                });
+                attrs
+                    .with_min_inner_size(min)
+                    .with_fullscreen(Some(Fullscreen::Borderless(monitor)))
+            }
             Surface::Window => {
                 // Largest whole multiple of the original 640x480 that fills at most 80% of the screen.
                 let k = event_loop
@@ -541,6 +551,10 @@ fn main() {
         app_id: opts.app_id(),
         #[cfg(feature = "screensaver")]
         app_id: None,
+        #[cfg(not(feature = "screensaver"))]
+        main_monitor: opts.main_monitor(),
+        #[cfg(feature = "screensaver")]
+        main_monitor: None,
     };
     if let Err(e) = event_loop.run_app(&mut app) {
         eprintln!("error: {e}");

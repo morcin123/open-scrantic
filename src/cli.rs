@@ -27,7 +27,8 @@ Options:
                   with an island far away on the outermost one
   --monitors=L    the monitors as the desktop places them (needed on Wayland, where they cannot be
                   read): NAME:x,y,width,height for each, separated by `;`
-  --main-monitor=NAME  the monitor for the picture (default: the primary one)
+  --main-monitor=NAME  the monitor for the picture, with or without --all-monitors (default: the
+                  primary one, or wherever the system opens the window)
   --app-id=ID     Wayland app id of the windows, for the compositor's window rules
   -V, --version   print the version and exit
   -h, --help      print this help and exit
@@ -108,6 +109,11 @@ impl Options {
     pub fn all_monitors(&self, _saved: &Config) -> Option<(Option<Vec<Screen>>, Option<String>)> {
         self.all_monitors
             .then(|| (self.monitors.clone(), self.main_monitor.clone()))
+    }
+
+    /// The monitor for the picture, with `--main-monitor`.
+    pub fn main_monitor(&self) -> Option<String> {
+        self.main_monitor.clone()
     }
 
     /// The Wayland app id of the windows, with `--app-id`.
