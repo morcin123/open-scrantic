@@ -75,6 +75,11 @@ impl Options {
         }
     }
 
+    /// The picture on the primary monitor and the sea on the others, as set in the INI; not in the preview.
+    pub fn all_monitors(&self, saved: &Config) -> Option<(Option<Vec<open_scrantic::sea::Screen>>, Option<String>)> {
+        (self.surface == Surface::Fullscreen && saved.all_monitors).then_some((None, None))
+    }
+
     /// The clock and weather over the screen, as set in the INI; the small preview has none.
     pub fn overlay(&self, saved: &Config) -> Option<Overlay> {
         match self.surface {
@@ -176,6 +181,7 @@ fn configure(owner: Option<isize>) {
             cfg.soft_audio,
             cfg.clock,
             cfg.weather,
+            cfg.all_monitors,
         ],
         location: cfg.weather_location.clone(),
         coords: cfg.weather_coords.clone(),
@@ -190,6 +196,7 @@ fn configure(owner: Option<isize>) {
             cfg.soft_audio,
             cfg.clock,
             cfg.weather,
+            cfg.all_monitors,
         ] = new.checks;
         cfg.weather_location = clean_location(&new.location);
         // Coordinates belong to a place picked from the list; an emptied field means the place of the IP address.

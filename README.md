@@ -27,7 +27,10 @@ one day to the next, with the same behavior as the original.
 > a fuller settings dialog to the Windows screensaver (with a place search, Open-Meteo geocoding): Dedither, SoftAudio, Clock, Weather, WeatherLocation and WeatherCoords are
 > stored in `SCRANTIC.INI` next to the original keys. The regular program shows the overlay with `--clock` and
 > `--weather`. The `Windows screensaver` workflow builds `JohnnyCastaway.scr` on every push to `main` and tests the
-> installer in `windows-installer/` (its messages and `CZYTAJ.txt` are in Polish, for the user it is made for). Fonts:
+> installer in `windows-installer/` (its messages and `CZYTAJ.txt` are in Polish, for the user it is made for). With
+> several monitors the picture stays on the primary one and the others show the open sea around it, lined up on the
+> horizon, with the island far away on the outermost one (`AllMonitors` in the INI, on by default; `--all-monitors`
+> with `--monitors=` and `--main-monitor=` for the regular program, as Wayland does not tell where monitors are). Fonts:
 > JetBrains Mono Nerd Font (SIL OFL 1.1, `resources/fonts/OFL.txt`).
 
 > [!IMPORTANT]

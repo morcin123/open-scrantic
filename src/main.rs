@@ -21,6 +21,7 @@ use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
+use winit::monitor::MonitorHandle;
 use winit::window::{Fullscreen, Window, WindowAttributes, WindowId};
 
 use open_scrantic::engine::config::Config;
@@ -28,6 +29,7 @@ use open_scrantic::engine::gfx::{HEIGHT, WIDTH};
 use open_scrantic::engine::{Clock, Engine, STEP_MS, TICK_MS};
 use open_scrantic::overlay::Overlay;
 use open_scrantic::present;
+use open_scrantic::sea::{self, Bands, FarIsland, Layout, Screen, Surroundings};
 #[cfg(feature = "screensaver")]
 use open_scrantic::windows_ui;
 use open_scrantic::{assets, audio};
@@ -65,11 +67,49 @@ enum Surface {
     Embedded(isize),
 }
 
+/// A monitor of the layout to cover, with winit's handle to go fullscreen on (if winit knows it).
+type Placement = (usize, Option<MonitorHandle>);
+
+/// A window and what it shows.
+struct View {
+    window: Rc<Window>,
+    surface: softbuffer::Surface<Rc<Window>, Rc<Window>>,
+    /// The monitor of [`App::layout`] it covers; `None` for the only window (no sea around the picture).
+    screen: Option<usize>,
+    /// The monitor to go fullscreen on once more after the first frame: some compositors (Hyprland) map a second
+    /// window that asked for it before being shown as an ordinary one.
+    refullscreen: Option<Fullscreen>,
+}
+
+impl View {
+    fn shows_picture(&self, layout: Option<&Layout>) -> bool {
+        match (self.screen, layout) {
+            (Some(i), Some(l)) => i == l.main,
+            _ => true,
+        }
+    }
+}
+
+/// Not in the original: how to fill all monitors (`--all-monitors`, or AllMonitors of the INI).
+struct AllMonitors {
+    /// The monitors as the desktop places them, if given (Linux: winit cannot tell positions under Wayland);
+    /// otherwise winit's.
+    screens: Option<Vec<Screen>>,
+    /// The name of the monitor for the picture; otherwise the primary one.
+    main: Option<String>,
+}
+
 struct App {
     engine: Engine,
     audio: Option<audio::Audio>,
-    window: Option<Rc<Window>>,
-    surface: Option<softbuffer::Surface<Rc<Window>, Rc<Window>>>,
+    views: Vec<View>,
+    /// Picture on one monitor and the sea on the others, if wanted.
+    all_monitors: Option<AllMonitors>,
+    layout: Option<Layout>,
+    /// What the sea shows around the picture, for the session numbered first.
+    around: Option<(u64, Surroundings)>,
+    /// The sea of the current step as RGB, made once for all the windows that show it.
+    sea_rgb: Option<(u64, Vec<u32>)>,
     start: Instant,
     steps: u64,
     ticks: u64,
@@ -89,6 +129,8 @@ struct App {
     intro_drawn: bool,
     /// Set when the process was asked to terminate (see [`termination_flag`]).
     terminate: Arc<AtomicBool>,
+    /// The Wayland app id of the windows (`--app-id`), for the compositor's window rules.
+    app_id: Option<String>,
 }
 
 impl App {
@@ -145,30 +187,70 @@ impl App {
         }
     }
 
-    fn redraw(&mut self) {
-        if std::mem::take(&mut self.screenshot) {
-            self.save_screenshot();
-        }
-        let (Some(window), Some(surface)) = (&self.window, &mut self.surface) else {
-            return;
-        };
-        let size = window.inner_size();
-        let (Some(w), Some(h)) = (NonZeroU32::new(size.width), NonZeroU32::new(size.height)) else {
-            return;
-        };
-        if surface.resize(w, h).is_err() {
-            return;
-        }
-        let Ok(mut buf) = surface.buffer_mut() else { return };
-        let (w, h) = (size.width as usize, size.height as usize);
-        let px = &self.engine.frame().px;
-        let rgb = if self.dedither {
+    fn rgb(&self, px: &[u8]) -> Vec<u32> {
+        if self.dedither {
             present::dedither(px, &self.engine.palette)
         } else {
             present::plain(px, &self.engine.palette)
+        }
+    }
+
+    /// Makes the sea of this step ready for the windows that show it: its RGB frame and the far island.
+    fn prepare_sea(&mut self) {
+        let Some(layout) = &self.layout else { return };
+        if self.sea_rgb.as_ref().is_none_or(|(step, _)| *step != self.steps)
+            && let Some(frame) = self.engine.sea_frame()
+        {
+            self.sea_rgb = Some((self.steps, self.rgb(&frame.px)));
+        }
+        if self.around.as_ref().is_none_or(|(n, _)| *n != self.engine.sessions)
+            && let (Some((bg, horizon)), Some(island)) = (self.engine.sea_background(), self.engine.far_island())
+        {
+            let pal = &self.engine.palette;
+            let far = match layout.outermost() {
+                Some(screen) if horizon > 0 => FarIsland::new(layout, screen, horizon, island, pal),
+                _ => None,
+            };
+            let bands = Bands::new(&bg.px, pal, horizon);
+            let still = self.rgb(&bg.px);
+            self.around = Some((self.engine.sessions, Surroundings { bands, far, still }));
+        }
+    }
+
+    fn redraw(&mut self, id: WindowId) {
+        if std::mem::take(&mut self.screenshot) {
+            self.save_screenshot();
+        }
+        let Some(i) = self.views.iter().position(|v| v.window.id() == id) else {
+            return;
         };
-        present::scale(&rgb, &mut buf, w, h);
-        if let Some(overlay) = &mut self.overlay {
+        let picture = self.views[i].shows_picture(self.layout.as_ref());
+        let rgb = picture.then(|| self.rgb(&self.engine.frame().px));
+        self.prepare_sea();
+        let view = &mut self.views[i];
+        if let Some(fullscreen) = view.refullscreen.take() {
+            view.window.set_fullscreen(Some(fullscreen));
+        }
+        let size = view.window.inner_size();
+        let (Some(w), Some(h)) = (NonZeroU32::new(size.width), NonZeroU32::new(size.height)) else {
+            return;
+        };
+        if view.surface.resize(w, h).is_err() {
+            return;
+        }
+        let Ok(mut buf) = view.surface.buffer_mut() else { return };
+        let (w, h) = (size.width as usize, size.height as usize);
+        let mut keep = None;
+        if let Some(rgb) = &rgb {
+            present::scale(rgb, &mut buf, w, h);
+            keep = Some(present::placement(w, h));
+        }
+        if let (Some(layout), Some(screen), Some((_, sea_rgb)), Some((_, around))) =
+            (&self.layout, view.screen, &self.sea_rgb, &self.around)
+        {
+            sea::draw(&mut buf, w, h, (layout, screen), sea_rgb, around, keep);
+        }
+        if picture && let Some(overlay) = &mut self.overlay {
             overlay.draw(&mut buf, w, h);
         }
         let _ = buf.present();
@@ -191,8 +273,64 @@ fn center_on_primary_monitor(window: &Window, event_loop: &ActiveEventLoop) {
 }
 
 impl App {
+    /// The monitors to cover, the one for the picture last, each with winit's handle to go fullscreen on (if
+    /// winit knows it), and their layout. `None` when winit lists no monitor.
+    fn plan_monitors(all: &AllMonitors, event_loop: &ActiveEventLoop) -> Option<(Layout, Vec<Placement>)> {
+        let handles: Vec<MonitorHandle> = event_loop.available_monitors().collect();
+        let screens = all.screens.clone().unwrap_or_else(|| {
+            handles
+                .iter()
+                .enumerate()
+                .map(|(i, m)| {
+                    let (p, s) = (m.position(), m.size());
+                    Screen {
+                        name: m.name().unwrap_or_else(|| format!("#{i}")),
+                        x: p.x as f64,
+                        y: p.y as f64,
+                        w: s.width as f64,
+                        h: s.height as f64,
+                    }
+                })
+                .collect()
+        });
+        if screens.is_empty() {
+            return None;
+        }
+        let primary = event_loop.primary_monitor().and_then(|m| m.name());
+        let main_name = all.main.clone().or(primary);
+        let main = main_name
+            .and_then(|n| screens.iter().position(|s| s.name == n))
+            .unwrap_or(0);
+        let handle = |name: &str| handles.iter().find(|m| m.name().as_deref() == Some(name)).cloned();
+        // The picture's window last: Hyprland makes a window that maps on a monitor other than the focused one
+        // fullscreen only while it is the newest, and the last one keeps the focus (and the keyboard).
+        let mut out = Vec::new();
+        for (i, s) in screens.iter().enumerate() {
+            if i != main {
+                match handle(&s.name) {
+                    Some(h) => out.push((i, Some(h))),
+                    None => eprintln!("warning: no monitor named {:?} to show the sea on", s.name),
+                }
+            }
+        }
+        out.push((main, handle(&screens[main].name)));
+        Some((Layout { screens, main }, out))
+    }
+
+    /// Title and app id of every window.
+    fn base_attributes(&self) -> WindowAttributes {
+        #[allow(unused_mut)]
+        let mut attrs = Window::default_attributes().with_title("Open Scrantic");
+        #[cfg(all(unix, not(target_os = "macos")))]
+        if let Some(id) = &self.app_id {
+            use winit::platform::wayland::WindowAttributesExtWayland;
+            attrs = attrs.with_name(id.clone(), "");
+        }
+        attrs
+    }
+
     fn window_attributes(&self, event_loop: &ActiveEventLoop) -> WindowAttributes {
-        let attrs = Window::default_attributes().with_title("Open Scrantic");
+        let attrs = self.base_attributes();
         let min = PhysicalSize::new(WIDTH as u32, HEIGHT as u32);
         match self.target {
             Surface::Fullscreen => attrs
@@ -221,37 +359,65 @@ impl App {
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_some() {
+        if !self.views.is_empty() {
             return;
         }
-        let attrs = self.window_attributes(event_loop);
-        let window = match event_loop.create_window(attrs) {
-            Ok(w) => Rc::new(w),
-            Err(e) => {
-                eprintln!("error: cannot create window: {e}");
-                event_loop.exit();
-                return;
-            }
+        let planned = match (&self.all_monitors, self.target) {
+            (Some(all), Surface::Fullscreen) => Self::plan_monitors(all, event_loop),
+            _ => None,
         };
-        if self.target == Surface::Window {
-            center_on_primary_monitor(&window, event_loop);
-        }
-        window.set_cursor_visible(self.target == Surface::Window);
-        let surface = softbuffer::Context::new(Rc::clone(&window))
-            .and_then(|ctx| softbuffer::Surface::new(&ctx, Rc::clone(&window)));
-        match surface {
-            Ok(s) => self.surface = Some(s),
-            Err(e) => {
-                eprintln!("error: cannot create drawing surface: {e}");
-                event_loop.exit();
-                return;
+        let monitors = match planned {
+            Some((layout, monitors)) => {
+                self.layout = Some(layout);
+                monitors
+            }
+            None => Vec::new(),
+        };
+        let wanted: Vec<(WindowAttributes, Option<usize>, Option<Fullscreen>)> = if monitors.is_empty() {
+            vec![(self.window_attributes(event_loop), None, None)]
+        } else {
+            monitors
+                .into_iter()
+                .map(|(screen, handle)| {
+                    let fullscreen = Fullscreen::Borderless(handle);
+                    let attrs = self.base_attributes().with_fullscreen(Some(fullscreen.clone()));
+                    (attrs, Some(screen), Some(fullscreen))
+                })
+                .collect()
+        };
+        for (attrs, screen, refullscreen) in wanted {
+            let window = match event_loop.create_window(attrs) {
+                Ok(w) => Rc::new(w),
+                Err(e) => {
+                    eprintln!("error: cannot create window: {e}");
+                    event_loop.exit();
+                    return;
+                }
+            };
+            if self.target == Surface::Window {
+                center_on_primary_monitor(&window, event_loop);
+            }
+            window.set_cursor_visible(self.target == Surface::Window);
+            let surface = softbuffer::Context::new(Rc::clone(&window))
+                .and_then(|ctx| softbuffer::Surface::new(&ctx, Rc::clone(&window)));
+            match surface {
+                Ok(surface) => self.views.push(View {
+                    window,
+                    surface,
+                    screen,
+                    refullscreen,
+                }),
+                Err(e) => {
+                    eprintln!("error: cannot create drawing surface: {e}");
+                    event_loop.exit();
+                    return;
+                }
             }
         }
-        self.window = Some(window);
         self.start = Instant::now() + INTRO_HOLD;
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         #[cfg(feature = "screensaver")]
         if self.input.as_mut().is_some_and(|input| input.ends_run(&event)) {
             event_loop.exit();
@@ -259,7 +425,7 @@ impl ApplicationHandler for App {
         }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::RedrawRequested => self.redraw(),
+            WindowEvent::RedrawRequested => self.redraw(id),
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed && event.logical_key == Key::Named(NamedKey::Escape) =>
             {
@@ -269,8 +435,8 @@ impl ApplicationHandler for App {
                 if event.state == ElementState::Pressed && event.logical_key == Key::Named(NamedKey::F12) =>
             {
                 self.screenshot = true;
-                if let Some(w) = &self.window {
-                    w.request_redraw();
+                if let Some(v) = self.views.iter().find(|v| v.shows_picture(self.layout.as_ref())) {
+                    v.window.request_redraw();
                 }
             }
             _ => {}
@@ -282,7 +448,7 @@ impl ApplicationHandler for App {
             event_loop.exit();
             return;
         }
-        if self.window.is_none() {
+        if self.views.is_empty() {
             return;
         }
         // The preview ends with the settings window it draws into.
@@ -294,11 +460,11 @@ impl ApplicationHandler for App {
             return;
         }
         let stepped = self.advance();
-        if (stepped || !self.intro_drawn)
-            && let Some(w) = &self.window
-        {
+        if stepped || !self.intro_drawn {
             self.intro_drawn = true;
-            w.request_redraw();
+            for v in &self.views {
+                v.window.request_redraw();
+            }
         }
         let next = self.start + Duration::from_millis((self.steps + 1) * STEP_MS);
         event_loop.set_control_flow(ControlFlow::WaitUntil(next));
@@ -341,7 +507,11 @@ fn main() {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let saved = Config::load();
-    let engine = Engine::new(data, opts.config(&saved), seed).unwrap_or_else(|e| opts.fail(e));
+    let mut engine = Engine::new(data, opts.config(&saved), seed).unwrap_or_else(|e| opts.fail(e));
+    let all_monitors = opts.all_monitors(&saved);
+    if all_monitors.is_some() {
+        engine.enable_sea(seed).unwrap_or_else(|e| opts.fail(e));
+    }
     let audio = opts.audio(&saved);
     let dedither = opts.dedither(&saved);
     let overlay = opts.overlay(&saved);
@@ -349,8 +519,11 @@ fn main() {
     let mut app = App {
         engine,
         audio,
-        window: None,
-        surface: None,
+        views: Vec::new(),
+        all_monitors: all_monitors.map(|(screens, main)| AllMonitors { screens, main }),
+        layout: None,
+        around: None,
+        sea_rgb: None,
         start: Instant::now(),
         steps: 0,
         ticks: 0,
@@ -363,6 +536,10 @@ fn main() {
         screenshot: false,
         intro_drawn: false,
         terminate: termination_flag(),
+        #[cfg(not(feature = "screensaver"))]
+        app_id: opts.app_id(),
+        #[cfg(feature = "screensaver")]
+        app_id: None,
     };
     if let Err(e) = event_loop.run_app(&mut app) {
         eprintln!("error: {e}");

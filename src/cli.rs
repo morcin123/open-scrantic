@@ -3,6 +3,7 @@
 
 use open_scrantic::engine::config::Config;
 use open_scrantic::overlay::Overlay;
+use open_scrantic::sea::{self, Screen};
 use open_scrantic::{assets, audio};
 
 use crate::Surface;
@@ -10,6 +11,7 @@ use crate::Surface;
 const USAGE: &str = "\
 Usage: open-scrantic [--fullscreen] [--dedither] [--soft-audio] [--background=0|1] [--clouds=0|1]
                      [--waves=0|1] [--sounds=0|1] [--clock] [--weather]
+                     [--all-monitors [--monitors=NAME:x,y,w,h;...] [--main-monitor=NAME]] [--app-id=ID]
 
 Options:
   --fullscreen    start fullscreen instead of in a window
@@ -21,6 +23,12 @@ Options:
   --sounds=N      override Sounds of SCRANTIC.INI for this run
   --clock         show the time and date at the top of the screen
   --weather       show the weather there (place: WeatherLocation of SCRANTIC.INI, empty = from the IP)
+  --all-monitors  with --fullscreen: the picture on one monitor and the open sea on all the others,
+                  with an island far away on the outermost one
+  --monitors=L    the monitors as the desktop places them (needed on Wayland, where they cannot be
+                  read): NAME:x,y,width,height for each, separated by `;`
+  --main-monitor=NAME  the monitor for the picture (default: the primary one)
+  --app-id=ID     Wayland app id of the windows, for the compositor's window rules
   -V, --version   print the version and exit
   -h, --help      print this help and exit
 
@@ -51,6 +59,10 @@ pub struct Options {
     soft_audio: bool,
     clock: bool,
     weather: bool,
+    all_monitors: bool,
+    monitors: Option<Vec<Screen>>,
+    main_monitor: Option<String>,
+    app_id: Option<String>,
     overrides: Overrides,
 }
 
@@ -92,6 +104,17 @@ impl Options {
         audio::Audio::new(self.soft_audio)
     }
 
+    /// With `--all-monitors`: the monitors (if given) and the one for the picture (if named).
+    pub fn all_monitors(&self, _saved: &Config) -> Option<(Option<Vec<Screen>>, Option<String>)> {
+        self.all_monitors
+            .then(|| (self.monitors.clone(), self.main_monitor.clone()))
+    }
+
+    /// The Wayland app id of the windows, with `--app-id`.
+    pub fn app_id(&self) -> Option<String> {
+        self.app_id.clone()
+    }
+
     /// The clock and weather overlay, only with `--clock` or `--weather`; the place comes from the INI.
     pub fn overlay(&self, saved: &Config) -> Option<Overlay> {
         Overlay::new(&Config {
@@ -119,6 +142,10 @@ pub fn parse_args() -> Result<Option<Options>, String> {
         soft_audio: false,
         clock: false,
         weather: false,
+        all_monitors: false,
+        monitors: None,
+        main_monitor: None,
+        app_id: None,
         overrides: Overrides::default(),
     };
     for a in std::env::args().skip(1) {
@@ -128,6 +155,7 @@ pub fn parse_args() -> Result<Option<Options>, String> {
             "--soft-audio" => o.soft_audio = true,
             "--clock" => o.clock = true,
             "--weather" => o.weather = true,
+            "--all-monitors" => o.all_monitors = true,
             "-V" | "--version" => {
                 println!("open-scrantic {}", env!("CARGO_PKG_VERSION"));
                 return Ok(None);
@@ -141,6 +169,11 @@ pub fn parse_args() -> Result<Option<Options>, String> {
                 Some(("--clouds", v)) => o.overrides.clouds = Some(parse_flag("--clouds", v)?),
                 Some(("--waves", v)) => o.overrides.waves = Some(parse_flag("--waves", v)?),
                 Some(("--sounds", v)) => o.overrides.sounds = Some(parse_flag("--sounds", v)?),
+                Some(("--monitors", v)) => {
+                    o.monitors = Some(sea::parse_screens(v).map_err(|e| format!("{e}\n\n{USAGE}"))?)
+                }
+                Some(("--main-monitor", v)) => o.main_monitor = Some(v.to_string()),
+                Some(("--app-id", v)) if !v.is_empty() => o.app_id = Some(v.to_string()),
                 _ => return Err(format!("unknown argument {a}\n\n{USAGE}")),
             },
         }

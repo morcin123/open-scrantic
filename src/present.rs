@@ -155,6 +155,13 @@ impl<'a> ScaledRows<'a> {
     }
 }
 
+/// Where [`scale`] puts the picture in a `w` x `h` window: x, y, width and height.
+pub fn placement(w: usize, h: usize) -> (usize, usize, usize, usize) {
+    let k = (w as f64 / W as f64).min(h as f64 / H as f64);
+    let (dw, dh) = ((W as f64 * k) as usize, (H as f64 * k) as usize);
+    ((w - dw) / 2, (h - dh) / 2, dw, dh)
+}
+
 /// Draws `src` (640x480 RGB) into `dst` (`w` x `h`) as large as fits, centered, black elsewhere.
 /// Sharp-bilinear: pixels stay solid and are blended with the neighbor only within one screen pixel
 /// of an edge, so an integer factor is exact replication and a fractional one has uniform pixels.

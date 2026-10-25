@@ -28,6 +28,8 @@ pub struct Config {
     /// Not in the original: the clock and weather drawn over the picture (see `overlay.rs`).
     pub clock: bool,
     pub weather: bool,
+    /// Not in the original: the picture on the primary monitor and the open sea on the others.
+    pub all_monitors: bool,
     /// Place for the weather report, as typed by the user; empty means located from the IP address.
     pub weather_location: String,
     /// `lat,lon` of that place when it was picked from the search; the report then uses these, the name is only
@@ -56,6 +58,7 @@ impl Default for Config {
             soft_audio: true,
             clock: true,
             weather: true,
+            all_monitors: true,
             weather_location: String::new(),
             weather_coords: String::new(),
         }
@@ -149,6 +152,7 @@ impl Config {
                 "softaudio" => cfg.soft_audio = flag(v)?,
                 "clock" => cfg.clock = flag(v)?,
                 "weather" => cfg.weather = flag(v)?,
+                "allmonitors" => cfg.all_monitors = flag(v)?,
                 "numdays" => cfg.num_days = range(v, 11)?,
                 "introduction" => cfg.intro = range(v, 12)?,
                 "currentyear" => cfg.year = range(v, 9999)?,
@@ -172,7 +176,7 @@ impl Config {
         let text = format!(
             "{SECTION}\nBackground={}\nClouds={}\nWaves={}\nSounds={}\nNumDays={}\n\
              Introduction={}\nCurrentYear={}\nCurrentMonth={}\nCurrentDay={}\nStartTime={}\n\
-             Dedither={}\nSoftAudio={}\nClock={}\nWeather={}\nWeatherLocation={}\nWeatherCoords={}\n",
+             Dedither={}\nSoftAudio={}\nClock={}\nWeather={}\nAllMonitors={}\nWeatherLocation={}\nWeatherCoords={}\n",
             b(self.background),
             b(self.clouds),
             b(self.waves),
@@ -187,6 +191,7 @@ impl Config {
             b(self.soft_audio),
             b(self.clock),
             b(self.weather),
+            b(self.all_monitors),
             clean_location(&self.weather_location),
             clean_coords(&self.weather_coords),
         );

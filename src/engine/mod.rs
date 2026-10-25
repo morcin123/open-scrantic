@@ -20,7 +20,7 @@ use crate::assets::{Result, ScreensaverData};
 use ads::AdsRuntime;
 use config::Config;
 use gfx::Canvas;
-use island::{Island, Options};
+use island::{Island, IslandPicture, Options};
 use rng::Rng;
 use walk::Walk;
 
@@ -107,6 +107,23 @@ pub struct Engine {
     sounds: Vec<u32>,
     /// Number of plan entries completed so far (diagnostics).
     pub scenes_done: u64,
+    /// Not in the original: number of sessions started so far.
+    pub sessions: u64,
+    /// Not in the original: the open sea shown on the other monitors, if enabled.
+    sea: Option<Sea>,
+}
+
+/// Not in the original: the sea around the island for the monitors beside the picture. It is the session's ocean
+/// picture with its own clouds and whitecaps, no island, and its own random numbers, so the story runs exactly as
+/// without it.
+struct Sea {
+    island: Island,
+    rng: Rng,
+    bg: Canvas,
+    work: Canvas,
+    front: Canvas,
+    /// The island with its palm, as one picture (see [`Island::far_island`]).
+    far: IslandPicture,
 }
 
 /// seg4:0c48 – half-hour slot of an HHMM time, shifted as the original does.
@@ -138,6 +155,8 @@ impl Engine {
             front,
             now: 0,
             idle_timer: 0,
+            sea: None,
+            sessions: 0,
             offset: (0, 0),
             plan: Vec::new(),
             plan_idx: 0,
@@ -156,6 +175,42 @@ impl Engine {
 
     pub fn frame(&self) -> &Canvas {
         &self.front
+    }
+
+    /// Not in the original: also animates an open sea for other monitors ([`Engine::sea_frame`]) from the next
+    /// session on, the current one included if none has started yet.
+    pub fn enable_sea(&mut self, seed_time: u64) -> Result<()> {
+        let mut island = Island::new(&self.data.archive, self.data.exe.whitecap_seqs.clone())?;
+        island.sea_only = true;
+        let mut rng = Rng::new(self.data.exe.rng_table, self.data.exe.rng_j, self.data.exe.rng_k);
+        rng.warm_up(seed_time.wrapping_add(0x5EA));
+        let far = island.far_island();
+        let bg = self.bg.clone();
+        self.sea = Some(Sea {
+            island,
+            rng,
+            work: bg.clone(),
+            front: bg.clone(),
+            bg,
+            far,
+        });
+        Ok(())
+    }
+
+    /// The open sea of this step, if enabled: same size and palette as [`Engine::frame`].
+    pub fn sea_frame(&self) -> Option<&Canvas> {
+        self.sea.as_ref().map(|s| &s.front)
+    }
+
+    /// The background of [`Engine::sea_frame`] this session (no whitecaps) and the row of its horizon (0 when it
+    /// has no sea).
+    pub fn sea_background(&self) -> Option<(&Canvas, i32)> {
+        self.sea.as_ref().map(|s| (&s.bg, s.island.horizon))
+    }
+
+    /// The island to show far away on the sea.
+    pub fn far_island(&self) -> Option<&IslandPicture> {
+        self.sea.as_ref().map(|s| &s.far)
     }
 
     /// Sound effects requested since the last call (WAVESFX numbers).
@@ -177,6 +232,9 @@ impl Engine {
             &mut self.island.cap_timer,
         ] {
             *t = t.saturating_sub(1);
+        }
+        if let Some(sea) = &mut self.sea {
+            sea.island.cap_timer = sea.island.cap_timer.saturating_sub(1);
         }
     }
 
@@ -402,6 +460,7 @@ impl Engine {
     /// seg4:0540 – start a new session: plan scenes and build the island.
     fn new_session(&mut self, clock: &Clock) {
         self.ads = None;
+        self.sessions += 1;
         let t = clock.hour * 100 + if clock.minute >= 30 { 30 } else { 0 };
         let phase = (half_hour_slot(t) - half_hour_slot(self.config.start_time) + 16) % 16;
         self.island.phase = phase;
@@ -432,6 +491,13 @@ impl Engine {
             self.config.num_days,
         );
         self.offset = self.island.ttm_offset(false);
+        if let Some(sea) = &mut self.sea {
+            let s = &mut sea.island;
+            s.picture.clone_from(&self.island.picture);
+            s.reset_config();
+            (s.mode, s.phase) = (self.island.mode, phase);
+            s.init(&self.data.archive, &mut sea.bg, &mut sea.rng, &opts, 0);
+        }
         if self.debug {
             let names: Vec<String> = self.plan.iter().map(|&i| self.scene_name(i)).collect();
             eprintln!(
@@ -552,6 +618,11 @@ impl Engine {
             }
         }
         self.island.draw_holiday(&mut self.work);
+        if let Some(sea) = &mut self.sea {
+            sea.work.px.copy_from_slice(&sea.bg.px);
+            sea.island.step(&mut sea.work, &mut sea.rng);
+            std::mem::swap(&mut sea.front, &mut sea.work);
+        }
         if self.story_scene == Some(si) {
             self.sounds.push(STORY_CHIME);
             self.story_scene = None;

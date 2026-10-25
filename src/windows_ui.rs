@@ -39,8 +39,9 @@ use crate::overlay::{Place, search_places};
 const TITLE: &str = "Johnny Castaway – ustawienia";
 const CLASS: &str = "OpenScranticSettings";
 /// Number of checkboxes in [`Settings::checks`].
-pub const CHECKS: usize = 8;
-/// In the order of [`Settings::checks`]: the first four in the left column, the rest in the right one.
+pub const CHECKS: usize = 9;
+/// In the order of [`Settings::checks`]: the first four in the left column, the next four in the right one, and
+/// the last one below the left column.
 const LABELS: [&str; CHECKS] = [
     "Tło",
     "Chmury",
@@ -50,6 +51,7 @@ const LABELS: [&str; CHECKS] = [
     "Lepszy dźwięk",
     "Zegar",
     "Pogoda",
+    "Wszystkie monitory",
 ];
 const COLUMNS: [&str; 2] = ["Obraz", "Dźwięk i nakładka"];
 /// Control id of the first checkbox; the others follow.
@@ -71,7 +73,7 @@ const ACCEPTED: u32 = 1 << CHECKS;
 const CHECKED: usize = 1;
 
 const CLIENT_W: i32 = 420;
-const CLIENT_H: i32 = 428;
+const CLIENT_H: i32 = 452;
 /// `SS_CENTER`: static text centered in its box; `SS_LEFT` (0) is the default.
 const SS_CENTER: u32 = 1;
 // Edit and list box messages, notifications and styles (in `Win32_UI_Controls`, a feature this crate does not
@@ -103,7 +105,7 @@ static SEARCH_GENERATION: AtomicU32 = AtomicU32::new(0);
 static SETTING_FIELD: AtomicBool = AtomicBool::new(false);
 
 /// What the settings dialog edits: the checkboxes (Background, Clouds, Waves, Dedither, Sounds, SoftAudio, Clock,
-/// Weather) and the place of the weather report.
+/// Weather, AllMonitors) and the place of the weather report.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
     pub checks: [bool; CHECKS],
@@ -450,7 +452,11 @@ pub fn settings_dialog(initial: &Settings, owner: Option<isize>) -> Option<Setti
         }
         for (i, label) in LABELS.iter().enumerate() {
             let id = FIRST_CHECKBOX + i as i32;
-            let (c, r) = ((i / 4) as i32, (i % 4) as i32);
+            let (c, r) = if i < 8 {
+                ((i / 4) as i32, (i % 4) as i32)
+            } else {
+                (0, 4)
+            };
             let style = WS_TABSTOP | BS_AUTOCHECKBOX as u32;
             let check = child(
                 hwnd,
@@ -468,7 +474,7 @@ pub fn settings_dialog(initial: &Settings, owner: Option<isize>) -> Option<Setti
             "STATIC",
             "Miejscowość dla pogody (puste = według adresu IP):",
             0,
-            [margin, px(170), cw - 2 * margin, px(18)],
+            [margin, px(194), cw - 2 * margin, px(18)],
             -1,
             font,
         );
@@ -477,7 +483,7 @@ pub fn settings_dialog(initial: &Settings, owner: Option<isize>) -> Option<Setti
             "EDIT",
             &initial.location,
             WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL as u32,
-            [margin, px(192), cw - 2 * margin, px(24)],
+            [margin, px(216), cw - 2 * margin, px(24)],
             LOCATION_FIELD,
             font,
         );
@@ -487,7 +493,7 @@ pub fn settings_dialog(initial: &Settings, owner: Option<isize>) -> Option<Setti
             "LISTBOX",
             "",
             WS_TABSTOP | WS_BORDER | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT,
-            [margin, px(222), cw - 2 * margin, px(132)],
+            [margin, px(246), cw - 2 * margin, px(132)],
             PLACE_LIST,
             font,
         );
@@ -496,11 +502,11 @@ pub fn settings_dialog(initial: &Settings, owner: Option<isize>) -> Option<Setti
             "STATIC",
             "Wpisz nazwę i wybierz miejscowość z listy (z powiatem i województwem).",
             0,
-            [margin, px(358), cw - 2 * margin, px(18)],
+            [margin, px(382), cw - 2 * margin, px(18)],
             -1,
             font,
         );
-        let (button_w, gap, y, button_h) = (px(BUTTON_W), px(BUTTON_GAP), px(386), px(28));
+        let (button_w, gap, y, button_h) = (px(BUTTON_W), px(BUTTON_GAP), px(410), px(28));
         let x = (cw - 2 * button_w - gap) / 2;
         let ok = WS_TABSTOP | BS_DEFPUSHBUTTON as u32;
         child(hwnd, "BUTTON", "OK", ok, [x, y, button_w, button_h], IDOK, font);

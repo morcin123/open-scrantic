@@ -76,6 +76,25 @@ const LOW_SHORE: (i32, i32, i32, i32) = (0xFA, 0x12F, 0x17C, 0x45);
 const ROCK: (i32, i32, i32, i32) = (0x97, 0x148, 0x39, 0x1E);
 
 /// seg3:1a88 – 1 if rectangles intersect, +1 if the first lies inside the second.
+/// Not in the original: a picture of the island alone, `w` x `h` palette indices, `None` where see-through.
+pub struct IslandPicture {
+    pub w: usize,
+    pub h: usize,
+    pub px: Vec<Option<u8>>,
+}
+
+/// Not in the original: the row where the sky meets the sea: the first one that differs from the row above it in
+/// more than 5/8 of its pixels (the sky is flat, the sea dithered row by row).
+fn horizon(c: &Canvas) -> i32 {
+    let w = WIDTH as usize;
+    (32..400)
+        .find(|&y| {
+            let (row, above) = (&c.px[y * w..][..w], &c.px[(y - 1) * w..][..w]);
+            row.iter().zip(above).filter(|(a, b)| a != b).count() * 8 > w * 5
+        })
+        .unwrap_or(0) as i32
+}
+
 fn overlap(a: (i32, i32, i32, i32), b: (i32, i32, i32, i32)) -> i32 {
     let inside = a.0 >= b.0 && a.0 + a.2 < b.0 + b.2 && a.1 >= b.1 && a.1 + a.3 < b.1 + b.3;
     let hit = a.0 + a.2 >= b.0 && b.0 + b.2 > a.0 && a.1 + a.3 >= b.1 && b.1 + b.3 > a.1;
@@ -97,6 +116,14 @@ fn rand_pos(rng: &mut Rng, size: Option<(i32, i32)>, x0: i32, y0: i32, mut w: i3
 }
 
 pub struct Island {
+    /// Not in the original: only the ocean, sky and clouds (with whitecaps), no island, for the other monitors.
+    pub sea_only: bool,
+    /// The background picture of the current session (OCEAN0n.SCR or NIGHT.SCR); a sea-only island uses the one it
+    /// is given here.
+    pub picture: String,
+    /// Not in the original: the row of the sky's edge in the session picture (0 without one), where the far island
+    /// of another monitor sits.
+    pub horizon: i32,
     pub cfg: i32,
     pub tide: i32,
     pub no_raft: bool,
@@ -123,6 +150,9 @@ pub struct Island {
 impl Island {
     pub fn new(archive: &Archive, cap_seqs: [Vec<u8>; 3]) -> Result<Self> {
         Ok(Self {
+            sea_only: false,
+            picture: String::new(),
+            horizon: 0,
             cfg: -1,
             tide: -1,
             no_raft: false,
@@ -272,16 +302,23 @@ impl Island {
 
     /// seg3:0136 – build the session background (into `bg`) and reset the ambient animation.
     pub fn init(&mut self, archive: &Archive, bg: &mut Canvas, rng: &mut Rng, opts: &Options, max_day: i32) {
+        self.horizon = 0;
         if !opts.background || self.mode == Mode::NoIsland {
             bg.fill(5);
         } else {
-            let name = if self.mode == Mode::Normal && self.phase < 12 {
+            let name = if self.sea_only && !self.picture.is_empty() {
+                self.picture.clone()
+            } else if self.mode == Mode::Normal && self.phase < 12 {
                 format!("OCEAN0{}.SCR", rng.below(3))
             } else {
                 "NIGHT.SCR".to_string()
             };
+            self.picture.clone_from(&name);
             match archive.scr(&name) {
-                Ok(pic) => bg.load_picture(&pic),
+                Ok(pic) => {
+                    bg.load_picture(&pic);
+                    self.horizon = horizon(bg);
+                }
                 Err(e) => eprintln!("warning: {e}"),
             }
         }
@@ -289,7 +326,7 @@ impl Island {
             self.tide = (rng.next_u16() & 1) as i32;
         }
         self.place(rng);
-        if self.mode != Mode::NoIsland {
+        if self.mode != Mode::NoIsland && !self.sea_only {
             self.raft_stage = (max_day - 1).clamp(1, 5);
             self.draw_raft(bg);
             self.sprite(bg, 0, ISLAND.0, ISLAND.1, 0, Clip::FULL);
@@ -318,7 +355,7 @@ impl Island {
             return;
         }
         self.whitecaps(work, rng);
-        if !self.freeze_waves {
+        if !self.freeze_waves && !self.sea_only {
             self.update_waves();
             self.draw_waves(work);
             self.draw_raft(work);
@@ -376,6 +413,42 @@ impl Island {
         }
     }
 
+    /// Not in the original: the island with its palm as one picture, to draw it small and far away on another
+    /// monitor. Returns (width, height, palette index per pixel or None where it is see-through).
+    pub fn far_island(&self) -> IslandPicture {
+        // Drawn on two blank canvases of different colours: a pixel is part of the island where both agree.
+        // At the island origin (0, 0), where all of it is on the canvas.
+        let (mut a, mut b) = (Canvas::default(), Canvas::default());
+        a.fill(0);
+        b.fill(1);
+        let parts = [(0, ISLAND), (14, SHADOW), (13, TRUNK), (12, LEAVES)];
+        for c in [&mut a, &mut b] {
+            for (index, r) in parts {
+                if let Some(s) = self.background.sprites.get(index) {
+                    c.sprite(s, r.0, r.1, 0, Clip::FULL);
+                }
+            }
+        }
+        let x0 = parts.iter().map(|p| p.1.0).min().unwrap_or(0).max(0);
+        let y0 = parts.iter().map(|p| p.1.1).min().unwrap_or(0).max(0);
+        let x1 = parts.iter().map(|p| p.1.0 + p.1.2).max().unwrap_or(0).min(WIDTH);
+        let y1 = parts
+            .iter()
+            .map(|p| p.1.1 + p.1.3)
+            .max()
+            .unwrap_or(0)
+            .min(super::gfx::HEIGHT);
+        let (w, h) = ((x1 - x0).max(0) as usize, (y1 - y0).max(0) as usize);
+        let mut px = Vec::with_capacity(w * h);
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let i = (y * WIDTH + x) as usize;
+                px.push((a.px[i] == b.px[i]).then_some(a.px[i]));
+            }
+        }
+        IslandPicture { w, h, px }
+    }
+
     /// seg3:1e50 – holiday decoration, drawn on top every step.
     pub fn draw_holiday(&self, c: &mut Canvas) {
         if self.holiday == 0 || !self.holiday_ok || self.mode == Mode::NoIsland {
@@ -402,6 +475,9 @@ impl Island {
 
     /// seg3:1551 with 0x2E7A=1 – redraw the island parts covering a rectangle.
     fn redraw_island_over(&self, c: &mut Canvas, r: (i32, i32, i32, i32)) {
+        if self.sea_only {
+            return;
+        }
         let clip = Clip::rect(r.0, r.1, r.2, r.3);
         let bottom = (r.0, r.1 + r.3, r.2, 1);
         if overlap(r, (0, self.y + 0xD6, WIDTH, 0x10A)) != 0 {
@@ -568,11 +644,12 @@ impl Island {
                 continue;
             };
             let r = (c.x, c.y, s.w, s.h);
-            let hidden = self
-                .wave_spots()
-                .iter()
-                .take(3)
-                .any(|w| overlap(r, self.wave_rect(*w)) == 2);
+            let hidden = !self.sea_only
+                && self
+                    .wave_spots()
+                    .iter()
+                    .take(3)
+                    .any(|w| overlap(r, self.wave_rect(*w)) == 2);
             if !hidden {
                 work.sprite(s, c.x, c.y, 0, Clip::FULL);
                 self.redraw_island_over(work, r);
