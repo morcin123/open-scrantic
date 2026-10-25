@@ -26,7 +26,7 @@ Instalator:
 USTAWIENIA
 ----------
 Ustawienia -> Personalizacja -> Ekran blokady -> Wygaszacz ekranu -> "Ustawienia...":
-  Obraz:              Tło, Chmury, Fale, Wygładzanie obrazu
+  Obraz:              Tło, Chmury, Fale, Wygładzanie obrazu, Wszystkie monitory
   Dźwięk i nakładka:  Dźwięki, Lepszy dźwięk, Zegar, Pogoda
   Miejscowość dla pogody: wpisz nazwę, a pod spodem pojawi się lista pasujących
   miejscowości z powiatem i województwem (także małe wsie) - kliknij właściwą.
@@ -34,6 +34,10 @@ Ustawienia -> Personalizacja -> Ekran blokady -> Wygaszacz ekranu -> "Ustawienia
 
 Czas do uruchomienia ustawiasz w tym samym oknie Windows ("Czekaj: X minut").
 "Podgląd" uruchamia wygaszacz od razu. Ruch myszy lub dowolny klawisz go zamyka.
+
+Wszystkie monitory (domyślnie włączone): przy kilku monitorach Johnny jest na
+głównym, a na pozostałych widać otwarte morze z tym samym horyzontem, z daleką
+wysepką na najdalszym z nich.
 
 Pogoda pochodzi z wttr.in i odświeża się co 15 minut (potrzebny internet;
 bez niego pokazuje się sam zegar).
