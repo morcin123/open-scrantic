@@ -130,6 +130,7 @@ struct App {
     /// Set when the process was asked to terminate (see [`termination_flag`]).
     terminate: Arc<AtomicBool>,
     /// The Wayland app id of the windows (`--app-id`), for the compositor's window rules.
+    #[cfg_attr(not(all(unix, not(target_os = "macos"))), allow(dead_code))]
     app_id: Option<String>,
 }
 
